@@ -90,3 +90,12 @@ class ConnectionManager:
             }
             for node in self._nodes.values()
         ]
+    
+    async def send_to_node(self, node_id: str, message: dict) -> bool:
+        node = self._nodes.get(node_id)
+
+        if node is None or not node.online or node.websocket is None:
+            return False
+
+        await node.websocket.send_json(message)
+        return True

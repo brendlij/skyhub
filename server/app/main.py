@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 
+from uuid import uuid4
+from pydantic import BaseModel
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 import structlog
@@ -50,6 +52,44 @@ async def list_nodes(db: Session = Depends(get_db_session)):
             }
             for node in nodes
         ]
+    }
+
+class SequenceStartRequest(BaseModel):
+    interval_seconds: int = 30
+    exposure_ms: int = 10000
+    gain: float = 8
+    format: str = "jpg"
+
+
+@app.post("/api/nodes/{node_id}/sequence/start")
+async def start_sequence(node_id: str, request: SequenceStartRequest):
+    sequence_id = f"seq_{uuid4().hex}"
+
+    message = {
+        "type": "sequence.start",
+        "sequence_id": sequence_id,
+        "settings": {
+            "interval_seconds": request.interval_seconds,
+            "exposure_ms": request.exposure_ms,
+            "gain": request.gain,
+            "format": request.format,
+        },
+    }
+
+    sent = await connections.send_to_node(node_id, message)
+
+    if not sent:
+        return {
+            "status": "failed",
+            "reason": "node_not_connected",
+            "node_id": node_id,
+        }
+
+    return {
+        "status": "sent",
+        "node_id": node_id,
+        "sequence_id": sequence_id,
+        "message": message,
     }
 
 
