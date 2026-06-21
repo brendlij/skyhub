@@ -1,24 +1,23 @@
 import asyncio
 import json
-from pathlib import Path
+from contextlib import suppress
 from typing import Any
 
 import structlog
 import websockets
 
-from app.camera.mock_camera import MockCamera
-from app.storage.paths import CAPTURES_DIR
 from app.camera.base import CameraDevice
-from app.camera.mock_camera import MockCamera
+from app.camera.factory import create_camera
+from app.config import get_settings
+from app.storage.paths import CAPTURES_DIR
 
-
-NODE_ID = "pi-hqcam-01"
-SERVER_WS_URL = f"ws://127.0.0.1:8000/ws/nodes/{NODE_ID}"
 
 logger = structlog.get_logger()
+node_settings = get_settings()
 
-camera: CameraDevice = MockCamera()
+camera: CameraDevice = create_camera(node_settings.camera_driver)
 active_sequence_task: asyncio.Task | None = None
+active_sequence_id: str | None = None
 
 
 async def send_json(websocket, message: dict[str, Any]):
@@ -26,43 +25,47 @@ async def send_json(websocket, message: dict[str, Any]):
 
 
 async def send_hello(websocket):
+    camera_info = camera.get_info()
     message = {
         "type": "node.hello",
-        "node_id": NODE_ID,
+        "node_id": node_settings.node_id,
         "version": "0.1.0",
         "capabilities": {
-            "camera": "mock",
-            "supports_exposure": True,
-            "supports_gain": True,
-            "supports_jpg": True,
+            "camera": camera_info.driver,
+            "camera_id": camera_info.camera_id,
+            "camera_name": camera_info.name,
+            "supports_exposure": camera_info.supports_exposure,
+            "supports_gain": camera_info.supports_gain,
+            "supported_formats": camera_info.supported_formats,
+            "supports_jpg": "jpg" in camera_info.supported_formats,
         },
     }
 
     await send_json(websocket, message)
-    logger.info("node.hello.sent", node_id=NODE_ID)
+    logger.info("node.hello.sent", node_id=node_settings.node_id)
 
 
 async def heartbeat_loop(websocket):
     while True:
         message = {
             "type": "node.heartbeat",
-            "node_id": NODE_ID,
+            "node_id": node_settings.node_id,
         }
 
         await send_json(websocket, message)
-        logger.info("node.heartbeat.sent", node_id=NODE_ID)
+        logger.info("node.heartbeat.sent", node_id=node_settings.node_id)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(node_settings.heartbeat_interval_seconds)
 
 
-async def capture_sequence_loop(websocket, sequence_id: str, settings: dict[str, Any]):
-    interval_seconds = int(settings.get("interval_seconds", 30))
+async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: dict[str, Any]):
+    interval_seconds = int(capture_settings.get("interval_seconds", 30))
 
     logger.info(
         "sequence.loop.started",
         sequence_id=sequence_id,
         interval_seconds=interval_seconds,
-        settings=settings,
+        settings=capture_settings,
     )
 
     try:
@@ -71,12 +74,12 @@ async def capture_sequence_loop(websocket, sequence_id: str, settings: dict[str,
                 websocket,
                 {
                     "type": "capture.started",
-                    "node_id": NODE_ID,
+                    "node_id": node_settings.node_id,
                     "sequence_id": sequence_id,
                 },
             )
 
-            capture_result = await camera.capture(settings=settings, output_dir=CAPTURES_DIR)
+            capture_result = await camera.capture(settings=capture_settings, output_dir=CAPTURES_DIR)
 
             logger.info(
                 "capture.saved.local",
@@ -91,7 +94,7 @@ async def capture_sequence_loop(websocket, sequence_id: str, settings: dict[str,
                 websocket,
                 {
                     "type": "capture.saved.local",
-                    "node_id": NODE_ID,
+                    "node_id": node_settings.node_id,
                     "sequence_id": sequence_id,
                     "path": str(capture_result.file_path),
                     "format": capture_result.format,
@@ -118,34 +121,88 @@ async def capture_sequence_loop(websocket, sequence_id: str, settings: dict[str,
             websocket,
             {
                 "type": "sequence.failed",
-                "node_id": NODE_ID,
+                "node_id": node_settings.node_id,
                 "sequence_id": sequence_id,
                 "error": str(error),
             },
         )
 
 
-async def start_sequence(websocket, sequence_id: str, settings: dict[str, Any]):
-    global active_sequence_task
+async def start_sequence(websocket, sequence_id: str, capture_settings: dict[str, Any]):
+    global active_sequence_id, active_sequence_task
 
     if active_sequence_task is not None and not active_sequence_task.done():
-        active_sequence_task.cancel()
+        await stop_sequence(websocket, reason="replaced")
 
     await send_json(
         websocket,
         {
             "type": "sequence.started",
-            "node_id": NODE_ID,
+            "node_id": node_settings.node_id,
             "sequence_id": sequence_id,
         },
     )
 
+    active_sequence_id = sequence_id
     active_sequence_task = asyncio.create_task(
         capture_sequence_loop(
             websocket=websocket,
             sequence_id=sequence_id,
-            settings=settings,
+            capture_settings=capture_settings,
         )
+    )
+
+
+async def stop_sequence(
+    websocket,
+    sequence_id: str | None = None,
+    reason: str = "requested",
+):
+    global active_sequence_id, active_sequence_task
+
+    if active_sequence_task is None or active_sequence_task.done():
+        await send_json(
+            websocket,
+            {
+                "type": "sequence.stop.ignored",
+                "node_id": node_settings.node_id,
+                "sequence_id": sequence_id,
+                "reason": "no_active_sequence",
+            },
+        )
+        return
+
+    stopped_sequence_id = active_sequence_id
+
+    if sequence_id is not None and sequence_id != active_sequence_id:
+        await send_json(
+            websocket,
+            {
+                "type": "sequence.stop.ignored",
+                "node_id": node_settings.node_id,
+                "sequence_id": sequence_id,
+                "active_sequence_id": active_sequence_id,
+                "reason": "sequence_id_mismatch",
+            },
+        )
+        return
+
+    active_sequence_task.cancel()
+
+    with suppress(asyncio.CancelledError):
+        await active_sequence_task
+
+    active_sequence_task = None
+    active_sequence_id = None
+
+    await send_json(
+        websocket,
+        {
+            "type": "sequence.stopped",
+            "node_id": node_settings.node_id,
+            "sequence_id": stopped_sequence_id,
+            "reason": reason,
+        },
     )
 
 
@@ -162,7 +219,7 @@ async def receive_loop(websocket):
 
         if message_type == "sequence.start":
             sequence_id = message.get("sequence_id")
-            settings = message.get("settings", {})
+            capture_settings = message.get("settings", {})
 
             if not sequence_id:
                 logger.warning("sequence.start.invalid", reason="missing_sequence_id")
@@ -171,28 +228,111 @@ async def receive_loop(websocket):
             logger.info(
                 "sequence.start.received",
                 sequence_id=sequence_id,
-                settings=settings,
+                settings=capture_settings,
             )
 
             await start_sequence(
                 websocket=websocket,
                 sequence_id=sequence_id,
-                settings=settings,
+                capture_settings=capture_settings,
+            )
+
+        elif message_type == "sequence.stop":
+            await stop_sequence(
+                websocket=websocket,
+                sequence_id=message.get("sequence_id"),
             )
 
 
-async def main():
-    logger.info("node.starting", node_id=NODE_ID, server_url=SERVER_WS_URL)
+async def cancel_active_sequence(reason: str):
+    global active_sequence_id, active_sequence_task
 
-    async with websockets.connect(SERVER_WS_URL) as websocket:
-        logger.info("node.connected", node_id=NODE_ID)
+    if active_sequence_task is None or active_sequence_task.done():
+        active_sequence_task = None
+        active_sequence_id = None
+        return
+
+    logger.warning(
+        "sequence.local.cancelled",
+        sequence_id=active_sequence_id,
+        reason=reason,
+    )
+
+    active_sequence_task.cancel()
+
+    with suppress(asyncio.CancelledError):
+        await active_sequence_task
+
+    active_sequence_task = None
+    active_sequence_id = None
+
+
+async def run_connection():
+    logger.info(
+        "node.connecting",
+        node_id=node_settings.node_id,
+        server_url=node_settings.server_ws_url,
+    )
+
+    async with websockets.connect(node_settings.server_ws_url) as websocket:
+        logger.info("node.connected", node_id=node_settings.node_id)
 
         await send_hello(websocket)
 
-        await asyncio.gather(
-            heartbeat_loop(websocket),
-            receive_loop(websocket),
-        )
+        try:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(websocket))
+            receive_task = asyncio.create_task(receive_loop(websocket))
+            tasks = {heartbeat_task, receive_task}
+
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+            for task in pending:
+                task.cancel()
+
+            for task in pending:
+                with suppress(asyncio.CancelledError):
+                    await task
+
+            for task in done:
+                task.result()
+
+        finally:
+            await cancel_active_sequence(reason="connection_lost")
+
+
+async def main():
+    reconnect_delay = node_settings.reconnect_initial_delay_seconds
+
+    logger.info(
+        "node.starting",
+        node_id=node_settings.node_id,
+        server_url=node_settings.server_ws_url,
+    )
+
+    while True:
+        try:
+            await run_connection()
+            logger.warning(
+                "node.connection.closed",
+                node_id=node_settings.node_id,
+                reconnect_delay_seconds=reconnect_delay,
+            )
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = node_settings.reconnect_initial_delay_seconds
+
+        except Exception as error:
+            logger.warning(
+                "node.connection.lost",
+                node_id=node_settings.node_id,
+                error=str(error),
+                reconnect_delay_seconds=reconnect_delay,
+            )
+
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(
+                reconnect_delay * 2,
+                node_settings.reconnect_max_delay_seconds,
+            )
 
 
 if __name__ == "__main__":

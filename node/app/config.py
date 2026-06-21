@@ -1,0 +1,31 @@
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+NODE_DIR = Path(__file__).resolve().parents[1]
+
+
+class NodeSettings(BaseSettings):
+    node_id: str = "pi-hqcam-01"
+    server_ws_base_url: str = "ws://127.0.0.1:8000/ws/nodes"
+    camera_driver: str = "mock"
+    heartbeat_interval_seconds: int = 10
+    reconnect_initial_delay_seconds: float = 1
+    reconnect_max_delay_seconds: float = 30
+    captures_dir: Path = NODE_DIR / "data" / "captures"
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="SKYHUB_NODE_",
+    )
+
+    @property
+    def server_ws_url(self) -> str:
+        return f"{self.server_ws_base_url.rstrip('/')}/{self.node_id}"
+
+
+@lru_cache
+def get_settings() -> NodeSettings:
+    return NodeSettings()

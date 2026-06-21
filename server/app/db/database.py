@@ -1,18 +1,13 @@
-from pathlib import Path
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+from app.config import get_settings
 
+settings = get_settings()
 
-SERVER_DIR = Path(__file__).resolve().parents[2]
-REPO_ROOT = SERVER_DIR.parent
-DATA_DIR = REPO_ROOT / "data"
-DB_PATH = DATA_DIR / "skyhub.db"
+settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+DATABASE_URL = f"sqlite:///{settings.database_path.as_posix()}"
 
 engine = create_engine(
     DATABASE_URL,

@@ -1,7 +1,6 @@
-from pathlib import Path
+from app.config import get_settings
 
-NODE_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = NODE_DIR / "data"
-CAPTURES_DIR = DATA_DIR / "captures"
+settings = get_settings()
+CAPTURES_DIR = settings.captures_dir
 
 CAPTURES_DIR.mkdir(parents=True, exist_ok=True)

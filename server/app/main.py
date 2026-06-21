@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 import structlog
 
 from app.db.database import SessionLocal, create_db_tables, get_db_session
+from app.config import get_settings
 from app.repositories.node_repository import NodeRepository
 from app.realtime.connection_manager import ConnectionManager
 
 logger = structlog.get_logger()
 connections = ConnectionManager()
+settings = get_settings()
 
 
 @asynccontextmanager
@@ -22,8 +24,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SkyHub Server",
-    version="0.1.0",
+    title=settings.app_name,
+    version=settings.app_version,
     lifespan=lifespan,
 )
 
@@ -61,6 +63,10 @@ class SequenceStartRequest(BaseModel):
     format: str = "jpg"
 
 
+class SequenceStopRequest(BaseModel):
+    sequence_id: str | None = None
+
+
 @app.post("/api/nodes/{node_id}/sequence/start")
 async def start_sequence(node_id: str, request: SequenceStartRequest):
     sequence_id = f"seq_{uuid4().hex}"
@@ -89,6 +95,30 @@ async def start_sequence(node_id: str, request: SequenceStartRequest):
         "status": "sent",
         "node_id": node_id,
         "sequence_id": sequence_id,
+        "message": message,
+    }
+
+
+@app.post("/api/nodes/{node_id}/sequence/stop")
+async def stop_sequence(node_id: str, request: SequenceStopRequest | None = None):
+    message = {
+        "type": "sequence.stop",
+        "sequence_id": request.sequence_id if request else None,
+    }
+
+    sent = await connections.send_to_node(node_id, message)
+
+    if not sent:
+        return {
+            "status": "failed",
+            "reason": "node_not_connected",
+            "node_id": node_id,
+        }
+
+    return {
+        "status": "sent",
+        "node_id": node_id,
+        "sequence_id": message["sequence_id"],
         "message": message,
     }
 
