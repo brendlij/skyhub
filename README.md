@@ -39,8 +39,17 @@ cd skyhub
 Then install the Pi camera package and run the node:
 
 ```bash
-sudo apt install -y python3-picamera2
-python skyhub.py node --node-id pi5-hqcam --camera-driver picamera2 --server-ws-base-url ws://WINDOWS_IP:8000/ws/nodes
+bash scripts/install-node.sh
+python3 skyhub.py node
 ```
 
 The node uses the mock camera by default. Use `--camera-driver picamera2` for a Raspberry Pi camera.
+
+The installer writes `node/.env`. For non-interactive setup, pass values as environment variables:
+
+```bash
+SKYHUB_NODE_NODE_ID=pi5-hqcam \
+SKYHUB_NODE_SERVER_WS_BASE_URL=ws://WINDOWS_IP:8000/ws/nodes \
+SKYHUB_NODE_CAMERA_DRIVER=picamera2 \
+bash scripts/install-node.sh
+```
