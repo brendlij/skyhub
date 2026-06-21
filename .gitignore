@@ -6,6 +6,8 @@ __pycache__/
 data/
 server/.venv-server/
 node/.venv-node/
+frontend/node_modules/
+frontend/dist/
 __pycache__/
 *.pyc
 

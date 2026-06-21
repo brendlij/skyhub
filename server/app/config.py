@@ -30,6 +30,10 @@ class ServerSettings(BaseSettings):
     def captures_dir(self) -> Path:
         return self.data_dir / "captures"
 
+    @property
+    def frontend_dist_dir(self) -> Path:
+        return REPO_ROOT / "frontend" / "dist"
+
 
 @lru_cache
 def get_settings() -> ServerSettings:

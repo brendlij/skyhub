@@ -11,6 +11,7 @@ from astral.sun import sun
 from pydantic import BaseModel
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 import structlog
 
@@ -45,13 +46,53 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if (settings.frontend_dist_dir / "assets").exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=settings.frontend_dist_dir / "assets"),
+        name="frontend-assets",
+    )
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", include_in_schema=False)
+async def frontend_app():
+    index_path = settings.frontend_dist_dir / "index.html"
+
+    if index_path.exists():
+        return FileResponse(index_path)
+
+    return HTMLResponse(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyHub</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #0f1115; color: #f3f5f7; }
+    code { background: #171a21; padding: .2rem .35rem; border-radius: 4px; }
+    a { color: #5bbcff; }
+  </style>
+</head>
+<body>
+  <h1>SkyHub</h1>
+  <p>The Vue frontend has not been built yet.</p>
+  <p>For development, run <code>cd frontend && npm install && npm run dev</code>.</p>
+  <p>For Python-served static files, run <code>cd frontend && npm run build</code>, then restart the server.</p>
+  <p><a href="/docs">API docs</a></p>
+</body>
+</html>
+        """
+    )
+
+
+@app.get("/legacy", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard():
     return """
 <!doctype html>
@@ -60,160 +101,123 @@ async def dashboard():
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyHub</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #0f1115;
-      --panel: #171a21;
-      --panel-2: #1f2430;
-      --text: #f3f5f7;
-      --muted: #9aa4b2;
-      --line: #2b3240;
-      --accent: #5bbcff;
-      --ok: #61d394;
-      --bad: #ff6b6b;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--line);
-      background: #12151b;
-    }
-    h1 { margin: 0; font-size: 20px; }
-    main {
-      display: grid;
-      grid-template-columns: 340px minmax(0, 1fr);
-      gap: 16px;
-      padding: 16px;
-    }
-    section {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel);
-      overflow: hidden;
-    }
-    h2 {
-      margin: 0;
-      padding: 12px 14px;
-      font-size: 14px;
-      border-bottom: 1px solid var(--line);
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: .04em;
-    }
-    .nodes { display: grid; gap: 8px; padding: 10px; }
-    .node {
-      width: 100%;
-      text-align: left;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px;
-      background: var(--panel-2);
-      color: var(--text);
-      cursor: pointer;
-    }
-    .node.active { border-color: var(--accent); }
-    .node strong { display: block; margin-bottom: 4px; }
-    .status { color: var(--bad); font-size: 13px; }
-    .status.online { color: var(--ok); }
-    .content { padding: 14px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-    }
-    label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
-    input {
-      width: 100%;
-      min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px;
-      background: #10131a;
-      color: var(--text);
-    }
-    input[type="checkbox"] { width: auto; }
-    .check { display: flex; align-items: center; gap: 8px; padding-top: 23px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    button {
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px 11px;
-      background: var(--panel-2);
-      color: var(--text);
-      cursor: pointer;
-    }
-    button.primary { background: #12324a; border-color: #285f86; }
-    button.danger { background: #3a171a; border-color: #793036; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    .preview {
-      display: grid;
-      gap: 10px;
-    }
+    body { min-height: 100vh; }
+    .node.active { border-color: var(--bs-info) !important; }
+    .node { text-align: left; }
     .preview img {
       width: 100%;
       max-height: 65vh;
       object-fit: contain;
-      border: 1px solid var(--line);
-      border-radius: 8px;
       background: #050608;
-    }
-    .meta, .message { color: var(--muted); font-size: 13px; }
-    .message { min-height: 18px; }
-    @media (max-width: 820px) {
-      main { grid-template-columns: 1fr; }
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
-<body>
-  <header>
-    <h1>SkyHub</h1>
-    <a href="/docs" style="color: var(--accent)">API docs</a>
-  </header>
-  <main>
-    <section>
-      <h2>Nodes</h2>
-      <div id="nodes" class="nodes"></div>
-    </section>
-    <div class="preview">
-      <section>
-        <h2>Control</h2>
-        <div class="content">
-          <div id="selected" class="meta">No node selected</div>
-          <div class="actions">
-            <button id="refresh">Refresh</button>
-            <button id="start" class="primary" disabled>Start</button>
-            <button id="stop" class="danger" disabled>Stop</button>
-          </div>
-          <div id="message" class="message"></div>
+<body data-bs-theme="dark" class="bg-body-tertiary">
+  <nav class="navbar border-bottom bg-body">
+    <div class="container-fluid">
+      <span class="navbar-brand mb-0 h1">SkyHub</span>
+      <a class="link-info" href="/docs">API docs</a>
+    </div>
+  </nav>
+  <main class="container-fluid py-3">
+    <div class="row g-3">
+      <aside class="col-12 col-lg-3 col-xxl-2">
+        <div class="card">
+          <div class="card-header text-uppercase small fw-semibold text-secondary">Nodes</div>
+          <div id="nodes" class="card-body row g-2"></div>
         </div>
-      </section>
-      <section>
-        <h2>Settings</h2>
-        <div class="content">
-          <div class="grid">
-            <label>Interval seconds<input id="interval_seconds" type="number" min="1"></label>
-            <label>Width<input id="width" type="number" min="1"></label>
-            <label>Height<input id="height" type="number" min="1"></label>
-            <label>Format<input id="format"></label>
-            <label class="check"><input id="day_auto_exposure" type="checkbox"> Day auto exposure</label>
-            <label>Day exposure ms<input id="day_exposure_ms" type="number" min="1"></label>
-            <label class="check"><input id="day_auto_gain" type="checkbox"> Day auto gain</label>
-            <label>Day gain<input id="day_gain" type="number" step="0.1" min="0"></label>
-            <label class="check"><input id="night_auto_exposure" type="checkbox"> Night auto exposure</label>
-            <label>Night exposure ms<input id="night_exposure_ms" type="number" min="1"></label>
-            <label class="check"><input id="night_auto_gain" type="checkbox"> Night auto gain</label>
-            <label>Night gain<input id="night_gain" type="number" step="0.1" min="0"></label>
+      </aside>
+      <div class="col-12 col-lg-9 col-xxl-10">
+        <div class="vstack gap-3">
+          <section class="card">
+            <div class="card-header text-uppercase small fw-semibold text-secondary">Control</div>
+            <div class="card-body">
+              <div id="selected" class="text-secondary mb-3">No node selected</div>
+              <div class="d-flex flex-wrap gap-2">
+                <button id="refresh" class="btn btn-outline-secondary">Refresh</button>
+                <button id="start" class="btn btn-primary" disabled>Start</button>
+                <button id="stop" class="btn btn-danger" disabled>Stop</button>
+              </div>
+              <div id="message" class="text-secondary small mt-3"></div>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-header text-uppercase small fw-semibold text-secondary">Settings</div>
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-6 col-xl-3">
+                  <label class="form-label" for="interval_seconds">Interval seconds</label>
+                  <input id="interval_seconds" class="form-control" type="number" min="1">
+                </div>
+                <div class="col-6 col-xl-3">
+                  <label class="form-label" for="width">Width</label>
+                  <input id="width" class="form-control" type="number" min="1">
+                </div>
+                <div class="col-6 col-xl-3">
+                  <label class="form-label" for="height">Height</label>
+                  <input id="height" class="form-control" type="number" min="1">
+                </div>
+                <div class="col-6 col-xl-3">
+                  <label class="form-label" for="format">Format</label>
+                  <input id="format" class="form-control">
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <div class="form-check mt-xl-4">
+                    <input id="day_auto_exposure" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="day_auto_exposure">Day auto exposure</label>
+                  </div>
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <label class="form-label" for="day_exposure_ms">Day exposure ms</label>
+                  <input id="day_exposure_ms" class="form-control" type="number" min="1">
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <div class="form-check mt-xl-4">
+                    <input id="day_auto_gain" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="day_auto_gain">Day auto gain</label>
+                  </div>
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <label class="form-label" for="day_gain">Day gain</label>
+                  <input id="day_gain" class="form-control" type="number" step="0.1" min="0">
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <div class="form-check mt-xl-4">
+                    <input id="night_auto_exposure" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="night_auto_exposure">Night auto exposure</label>
+                  </div>
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <label class="form-label" for="night_exposure_ms">Night exposure ms</label>
+                  <input id="night_exposure_ms" class="form-control" type="number" min="1">
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <div class="form-check mt-xl-4">
+                    <input id="night_auto_gain" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="night_auto_gain">Night auto gain</label>
+                  </div>
+                </div>
+                <div class="col-12 col-md-6 col-xl-3">
+                  <label class="form-label" for="night_gain">Night gain</label>
+                  <input id="night_gain" class="form-control" type="number" step="0.1" min="0">
+                </div>
+              </div>
+              <button id="save" class="btn btn-primary mt-3" disabled>Save Settings</button>
+            </div>
+          </section>
+          <section class="card preview">
+            <div class="card-header text-uppercase small fw-semibold text-secondary">Latest Capture</div>
+            <div class="card-body">
+              <div id="latestMeta" class="text-secondary small mb-2">No capture loaded</div>
+              <img id="latestImage" class="img-fluid rounded border" alt="Latest capture" hidden>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
           </div>
           <div class="actions">
             <button id="save" class="primary" disabled>Save Settings</button>
@@ -263,23 +267,29 @@ async def dashboard():
       }
 
       for (const node of data.nodes) {
+        const nodeColumn = document.createElement("div");
+        nodeColumn.className = "col-12";
         const button = document.createElement("button");
-        button.className = "node" + (node.node_id === selectedNodeId ? " active" : "");
+        button.className = "node btn btn-outline-secondary w-100 p-3" + (node.node_id === selectedNodeId ? " active" : "");
         button.innerHTML = `
-          <strong>${node.node_id}</strong>
-          <span class="status ${node.online ? "online" : ""}">${node.online ? "online" : "offline"}</span>
-          <div class="meta">${node.last_message_type || "no messages yet"}</div>
-          ${node.online ? "" : "<div class=\\"meta\\">Click to select, delete below</div>"}
+          <div class="fw-semibold">${node.node_id}</div>
+          <span class="badge ${node.online ? "text-bg-success" : "text-bg-danger"}">${node.online ? "online" : "offline"}</span>
+          <div class="small text-secondary mt-1">${node.last_message_type || "no messages yet"}</div>
+          ${node.online ? "" : "<div class=\\"small text-secondary\\">Click to select, delete below</div>"}
         `;
         button.onclick = () => selectNode(node.node_id);
-        container.appendChild(button);
+        nodeColumn.appendChild(button);
+        container.appendChild(nodeColumn);
 
         if (!node.online) {
+          const deleteColumn = document.createElement("div");
+          deleteColumn.className = "col-12";
           const deleteButton = document.createElement("button");
-          deleteButton.className = "node";
+          deleteButton.className = "btn btn-outline-danger btn-sm w-100";
           deleteButton.textContent = `Delete ${node.node_id}`;
           deleteButton.onclick = () => deleteNode(node.node_id);
-          container.appendChild(deleteButton);
+          deleteColumn.appendChild(deleteButton);
+          container.appendChild(deleteColumn);
         }
       }
 
@@ -380,15 +390,22 @@ async def dashboard():
       }
     }
 
-    document.getElementById("refresh").onclick = () => Promise.all([loadNodes(), loadLatest()]);
+    async function refreshDashboard() {
+      await loadNodes();
+
+      if (selectedNodeId) {
+        await Promise.all([loadSettings(), loadLatest()]);
+      }
+    }
+
+    document.getElementById("refresh").onclick = () => refreshDashboard().catch(error => setMessage(error.message));
     document.getElementById("save").onclick = () => saveSettings().catch(error => setMessage(error.message));
     document.getElementById("start").onclick = () => startCapture().catch(error => setMessage(error.message));
     document.getElementById("stop").onclick = () => stopCapture().catch(error => setMessage(error.message));
 
-    loadNodes().catch(error => setMessage(error.message));
+    refreshDashboard().catch(error => setMessage(error.message));
     setInterval(() => {
-      loadNodes().catch(() => {});
-      loadLatest().catch(() => {});
+      refreshDashboard().catch(() => {});
     }, 10000);
   </script>
 </body>

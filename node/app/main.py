@@ -107,6 +107,7 @@ async def heartbeat_loop(websocket):
 
 async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: dict[str, Any]):
     interval_seconds = int(capture_settings.get("interval_seconds", 30))
+    next_capture_at = asyncio.get_running_loop().time()
 
     logger.info(
         "sequence.loop.started",
@@ -117,6 +118,14 @@ async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: d
 
     try:
         while True:
+            now = asyncio.get_running_loop().time()
+
+            if now < next_capture_at:
+                await asyncio.sleep(next_capture_at - now)
+
+            capture_started_at = asyncio.get_running_loop().time()
+            next_capture_at = capture_started_at + interval_seconds
+
             await send_json(
                 websocket,
                 {
@@ -175,7 +184,16 @@ async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: d
                 },
             )
 
-            await asyncio.sleep(interval_seconds)
+            finished_at = asyncio.get_running_loop().time()
+            overrun_seconds = finished_at - next_capture_at
+
+            if overrun_seconds > 0:
+                logger.warning(
+                    "capture.cadence.overrun",
+                    sequence_id=sequence_id,
+                    interval_seconds=interval_seconds,
+                    overrun_seconds=round(overrun_seconds, 3),
+                )
 
     except asyncio.CancelledError:
         logger.warning("sequence.loop.cancelled", sequence_id=sequence_id)
