@@ -10,6 +10,7 @@ NODE_DIR = Path(__file__).resolve().parents[1]
 class NodeSettings(BaseSettings):
     node_id: str = "pi-hqcam-01"
     server_ws_base_url: str = "ws://127.0.0.1:8000/ws/nodes"
+    server_http_base_url: str | None = None
     camera_driver: str = "mock"
     heartbeat_interval_seconds: int = 10
     reconnect_initial_delay_seconds: float = 1
@@ -24,6 +25,24 @@ class NodeSettings(BaseSettings):
     @property
     def server_ws_url(self) -> str:
         return f"{self.server_ws_base_url.rstrip('/')}/{self.node_id}"
+
+    @property
+    def upload_url(self) -> str:
+        if self.server_http_base_url:
+            base_url = self.server_http_base_url
+        elif self.server_ws_base_url.startswith("wss://"):
+            base_url = "https://" + self.server_ws_base_url.removeprefix("wss://")
+        elif self.server_ws_base_url.startswith("ws://"):
+            base_url = "http://" + self.server_ws_base_url.removeprefix("ws://")
+        else:
+            base_url = self.server_ws_base_url
+
+        base_url = base_url.rstrip("/")
+
+        if base_url.endswith("/ws/nodes"):
+            base_url = base_url.removesuffix("/ws/nodes")
+
+        return f"{base_url}/api/captures/upload"
 
 
 @lru_cache

@@ -44,13 +44,20 @@ class PiCamera2Camera:
         height = int(settings.get("height", 1080))
         exposure_ms = settings.get("exposure_ms")
         gain = settings.get("gain")
+        auto_exposure = bool(settings.get("auto_exposure", False))
+        auto_gain = bool(settings.get("auto_gain", False))
         image_format = str(settings.get("format", "jpg")).lower()
 
         if image_format not in ["jpg", "jpeg"]:
             raise ValueError(f"PiCamera2Camera only supports jpg for now, got: {image_format}")
 
         self._ensure_configured(width=width, height=height)
-        self._apply_controls(exposure_ms=exposure_ms, gain=gain)
+        self._apply_controls(
+            auto_exposure=auto_exposure,
+            exposure_ms=exposure_ms,
+            auto_gain=auto_gain,
+            gain=gain,
+        )
 
         self._picamera2.capture_file(str(output_path), format="jpeg")
 
@@ -62,7 +69,9 @@ class PiCamera2Camera:
             metadata={
                 "captured_at": now.isoformat(),
                 "camera": "picamera2",
+                "auto_exposure": auto_exposure,
                 "exposure_ms": exposure_ms,
+                "auto_gain": auto_gain,
                 "gain": gain,
             },
         )
@@ -87,14 +96,21 @@ class PiCamera2Camera:
         self._started = True
         self._configured_size = size
 
-    def _apply_controls(self, exposure_ms: Any, gain: Any) -> None:
-        controls: dict[str, Any] = {}
+    def _apply_controls(
+        self,
+        auto_exposure: bool,
+        exposure_ms: Any,
+        auto_gain: bool,
+        gain: Any,
+    ) -> None:
+        controls: dict[str, Any] = {
+            "AeEnable": auto_exposure,
+        }
 
-        if exposure_ms is not None:
+        if not auto_exposure and exposure_ms is not None:
             controls["ExposureTime"] = int(float(exposure_ms) * 1000)
 
-        if gain is not None:
+        if not auto_gain and gain is not None:
             controls["AnalogueGain"] = float(gain)
 
-        if controls:
-            self._picamera2.set_controls(controls)
+        self._picamera2.set_controls(controls)

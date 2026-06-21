@@ -36,4 +36,4 @@ def get_db_session():
     finally:
         db.close()
 
-from app.models import node  # noqa: F401
+from app.models import node, node_camera_settings  # noqa: F401

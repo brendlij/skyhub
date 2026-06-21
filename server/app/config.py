@@ -13,6 +13,9 @@ class ServerSettings(BaseSettings):
     app_version: str = "0.1.0"
     data_dir: Path = REPO_ROOT / "data"
     database_filename: str = "skyhub.db"
+    latitude: float = 52.52
+    longitude: float = 13.405
+    timezone: str = "Europe/Berlin"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -22,6 +25,10 @@ class ServerSettings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.data_dir / self.database_filename
+
+    @property
+    def captures_dir(self) -> Path:
+        return self.data_dir / "captures"
 
 
 @lru_cache

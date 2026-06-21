@@ -20,6 +20,17 @@ class NodeRepository:
     def list_all(self) -> list[Node]:
         return self.db.query(Node).order_by(Node.node_id.asc()).all()
 
+    def delete(self, node_id: str) -> bool:
+        node = self.get(node_id)
+
+        if node is None:
+            return False
+
+        self.db.delete(node)
+        self.db.commit()
+
+        return True
+
     def mark_online(
         self,
         node_id: str,

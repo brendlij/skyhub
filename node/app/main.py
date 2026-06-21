@@ -1,8 +1,10 @@
 import asyncio
 import json
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 import websockets
 
@@ -16,12 +18,57 @@ logger = structlog.get_logger()
 node_settings = get_settings()
 
 camera: CameraDevice = create_camera(node_settings.camera_driver)
+active_capture_settings: dict[str, Any] = {
+    "interval_seconds": 60,
+    "width": 1920,
+    "height": 1080,
+    "format": "jpg",
+    "period": "night",
+    "auto_exposure": False,
+    "exposure_ms": 10000,
+    "auto_gain": False,
+    "gain": 8,
+}
+active_node_settings: dict[str, Any] = {}
 active_sequence_task: asyncio.Task | None = None
 active_sequence_id: str | None = None
 
 
 async def send_json(websocket, message: dict[str, Any]):
     await websocket.send(json.dumps(message))
+
+
+async def upload_capture(sequence_id: str, capture_result) -> dict[str, Any]:
+    metadata = capture_result.metadata or {}
+    form_data = {
+        "node_id": node_settings.node_id,
+        "sequence_id": sequence_id,
+        "format": capture_result.format,
+        "metadata": json.dumps(metadata),
+    }
+
+    if capture_result.width is not None:
+        form_data["width"] = str(capture_result.width)
+
+    if capture_result.height is not None:
+        form_data["height"] = str(capture_result.height)
+
+    async with httpx.AsyncClient(timeout=60, trust_env=False, verify=False) as client:
+        with Path(capture_result.file_path).open("rb") as capture_file:
+            response = await client.post(
+                node_settings.upload_url,
+                data=form_data,
+                files={
+                    "file": (
+                        Path(capture_result.file_path).name,
+                        capture_file,
+                        "image/jpeg",
+                    ),
+                },
+            )
+
+    response.raise_for_status()
+    return response.json()
 
 
 async def send_hello(websocket):
@@ -104,6 +151,30 @@ async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: d
                 },
             )
 
+            upload_result = await upload_capture(
+                sequence_id=sequence_id,
+                capture_result=capture_result,
+            )
+
+            logger.info(
+                "capture.uploaded",
+                sequence_id=sequence_id,
+                capture_id=upload_result.get("capture_id"),
+                server_path=upload_result.get("path"),
+            )
+
+            await send_json(
+                websocket,
+                {
+                    "type": "capture.uploaded",
+                    "node_id": node_settings.node_id,
+                    "sequence_id": sequence_id,
+                    "capture_id": upload_result.get("capture_id"),
+                    "server_path": upload_result.get("path"),
+                    "size_bytes": upload_result.get("size_bytes"),
+                },
+            )
+
             await asyncio.sleep(interval_seconds)
 
     except asyncio.CancelledError:
@@ -134,6 +205,11 @@ async def start_sequence(websocket, sequence_id: str, capture_settings: dict[str
     if active_sequence_task is not None and not active_sequence_task.done():
         await stop_sequence(websocket, reason="replaced")
 
+    effective_settings = {
+        **active_capture_settings,
+        **capture_settings,
+    }
+
     await send_json(
         websocket,
         {
@@ -148,8 +224,33 @@ async def start_sequence(websocket, sequence_id: str, capture_settings: dict[str
         capture_sequence_loop(
             websocket=websocket,
             sequence_id=sequence_id,
-            capture_settings=capture_settings,
+            capture_settings=effective_settings,
         )
+    )
+
+
+async def apply_config_update(websocket, message: dict[str, Any]):
+    global active_capture_settings, active_node_settings
+
+    active_node_settings = message.get("settings", {}) or {}
+    active_capture_settings = {
+        **active_capture_settings,
+        **(message.get("active_settings", {}) or {}),
+    }
+
+    logger.info(
+        "config.updated",
+        current_period=message.get("current_period"),
+        active_settings=active_capture_settings,
+    )
+
+    await send_json(
+        websocket,
+        {
+            "type": "config.updated",
+            "node_id": node_settings.node_id,
+            "current_period": message.get("current_period"),
+        },
     )
 
 
@@ -242,6 +343,9 @@ async def receive_loop(websocket):
                 websocket=websocket,
                 sequence_id=message.get("sequence_id"),
             )
+
+        elif message_type == "config.update":
+            await apply_config_update(websocket=websocket, message=message)
 
 
 async def cancel_active_sequence(reason: str):

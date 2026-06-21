@@ -29,6 +29,8 @@ class MockCamera:
         height = int(settings.get("height", 720))
         exposure_ms = settings.get("exposure_ms")
         gain = settings.get("gain")
+        auto_exposure = bool(settings.get("auto_exposure", False))
+        auto_gain = bool(settings.get("auto_gain", False))
         image_format = str(settings.get("format", "jpg")).lower()
 
         if image_format not in ["jpg", "jpeg"]:
@@ -40,8 +42,8 @@ class MockCamera:
         lines = [
             "SkyHub Mock Camera",
             f"Captured UTC: {now.isoformat()}",
-            f"Exposure: {exposure_ms} ms",
-            f"Gain: {gain}",
+            f"Exposure: {'auto' if auto_exposure else f'{exposure_ms} ms'}",
+            f"Gain: {'auto' if auto_gain else gain}",
             f"Format: {image_format}",
             f"Size: {width}x{height}",
         ]
@@ -67,7 +69,9 @@ class MockCamera:
             metadata={
                 "captured_at": now.isoformat(),
                 "camera": "mock",
+                "auto_exposure": auto_exposure,
                 "exposure_ms": exposure_ms,
+                "auto_gain": auto_gain,
                 "gain": gain,
             },
         )
