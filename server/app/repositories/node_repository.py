@@ -20,6 +20,18 @@ class NodeRepository:
     def list_all(self) -> list[Node]:
         return self.db.query(Node).order_by(Node.node_id.asc()).all()
 
+    def mark_all_offline(self) -> int:
+        nodes = self.list_all()
+
+        for node in nodes:
+            node.online = False
+            node.disconnected_at = utc_now()
+            node.last_message_type = "server.startup.offline"
+
+        self.db.commit()
+
+        return len(nodes)
+
     def delete(self, node_id: str) -> bool:
         node = self.get(node_id)
 

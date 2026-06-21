@@ -28,6 +28,13 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_tables()
+    db = SessionLocal()
+    try:
+        offline_count = NodeRepository(db).mark_all_offline()
+        logger.info("nodes.marked_offline", count=offline_count)
+    finally:
+        db.close()
+
     logger.info("database.ready")
     yield
 
