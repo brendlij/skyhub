@@ -271,6 +271,19 @@ async def apply_config_update(websocket, message: dict[str, Any]):
         },
     )
 
+    capture_enabled = bool(message.get("capture_enabled", False))
+    desired_sequence_id = message.get("sequence_id")
+
+    if capture_enabled and desired_sequence_id:
+        await start_sequence(
+            websocket=websocket,
+            sequence_id=desired_sequence_id,
+            capture_settings=active_capture_settings,
+        )
+
+    elif not capture_enabled and active_sequence_task is not None and not active_sequence_task.done():
+        await stop_sequence(websocket=websocket, reason="config_disabled")
+
 
 async def stop_sequence(
     websocket,

@@ -19,7 +19,9 @@ from app.db.database import SessionLocal, create_db_tables, get_db_session
 from app.config import get_settings
 from app.repositories.node_repository import NodeRepository
 from app.repositories.node_camera_settings_repository import NodeCameraSettingsRepository
+from app.repositories.node_overlay_settings_repository import NodeOverlaySettingsRepository
 from app.realtime.connection_manager import ConnectionManager
+from app.overlays import apply_overlays_to_image
 
 logger = structlog.get_logger()
 connections = ConnectionManager()
@@ -450,6 +452,13 @@ async def delete_node(node_id: str, db: Session = Depends(get_db_session)):
     if not node_deleted and not settings_deleted:
         raise HTTPException(status_code=404, detail="Node not found")
 
+    await connections.broadcast_dashboard(
+        {
+            "type": "node.deleted",
+            "node_id": node_id,
+        }
+    )
+
     return {
         "status": "deleted",
         "node_id": node_id,
@@ -486,6 +495,26 @@ class NodeCameraSettingsUpdate(BaseModel):
     night_exposure_ms: int | None = None
     night_auto_gain: bool | None = None
     night_gain: float | None = None
+
+
+class OverlayEntity(BaseModel):
+    id: str
+    type: str
+    label: str | None = None
+    enabled: bool = True
+    x: float = 0
+    y: float = 0
+    anchor: str = "top-left"
+    font_size: int = 28
+    color: str = "#ffffff"
+    background: str = "#000000"
+    background_opacity: float = 0.35
+    text: str | None = None
+
+
+class NodeOverlaySettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    entities: list[OverlayEntity] | None = None
 
 
 def safe_path_part(value: str) -> str:
@@ -555,7 +584,18 @@ def camera_settings_to_dict(camera_settings) -> dict:
             "auto_gain": camera_settings.night_auto_gain,
             "gain": camera_settings.night_gain,
         },
+        "capture_enabled": camera_settings.capture_enabled,
+        "current_sequence_id": camera_settings.current_sequence_id,
         "updated_at": camera_settings.updated_at.isoformat() if camera_settings.updated_at else None,
+    }
+
+
+def overlay_settings_to_dict(overlay_settings) -> dict:
+    return {
+        "node_id": overlay_settings.node_id,
+        "enabled": overlay_settings.enabled,
+        "entities": overlay_settings.entities or [],
+        "updated_at": overlay_settings.updated_at.isoformat() if overlay_settings.updated_at else None,
     }
 
 
@@ -614,6 +654,8 @@ def config_update_message(camera_settings) -> dict:
         "settings": camera_settings_to_dict(camera_settings),
         "current_period": period,
         "active_settings": capture_settings_for_period(camera_settings, period),
+        "capture_enabled": camera_settings.capture_enabled,
+        "sequence_id": camera_settings.current_sequence_id,
     }
 
 
@@ -663,11 +705,54 @@ async def update_node_settings(
     camera_settings = repo.update(node_id, request.model_dump(exclude_none=True))
     settings_payload = camera_settings_to_dict(camera_settings)
     sent = await connections.send_to_node(node_id, config_update_message(camera_settings))
+    await connections.broadcast_dashboard(
+        {
+            "type": "settings.updated",
+            "node_id": node_id,
+            "settings": settings_payload,
+            "node_notified": sent,
+        }
+    )
 
     return {
         "settings": settings_payload,
         "node_notified": sent,
     }
+
+
+@app.get("/api/nodes/{node_id}/overlays")
+async def get_node_overlays(node_id: str, db: Session = Depends(get_db_session)):
+    repo = NodeOverlaySettingsRepository(db)
+    overlay_settings = repo.get_or_create(node_id)
+    return overlay_settings_to_dict(overlay_settings)
+
+
+@app.put("/api/nodes/{node_id}/overlays")
+async def update_node_overlays(
+    node_id: str,
+    request: NodeOverlaySettingsUpdate,
+    db: Session = Depends(get_db_session),
+):
+    repo = NodeOverlaySettingsRepository(db)
+    values = request.model_dump(exclude_none=True)
+
+    if "entities" in values:
+        values["entities"] = [
+            entity.model_dump() if hasattr(entity, "model_dump") else entity
+            for entity in request.entities or []
+        ]
+
+    overlay_settings = repo.update(node_id, values)
+    payload = overlay_settings_to_dict(overlay_settings)
+    await connections.broadcast_dashboard(
+        {
+            "type": "overlay.updated",
+            "node_id": node_id,
+            "overlays": payload,
+        }
+    )
+
+    return payload
 
 
 @app.post("/api/nodes/{node_id}/sequence/start")
@@ -678,7 +763,13 @@ async def start_sequence(
 ):
     sequence_id = f"seq_{uuid4().hex}"
     settings_repo = NodeCameraSettingsRepository(db)
-    camera_settings = settings_repo.get_or_create(node_id)
+    camera_settings = settings_repo.update(
+        node_id,
+        {
+            "capture_enabled": True,
+            "current_sequence_id": sequence_id,
+        },
+    )
     period = current_period()
     effective_settings = apply_sequence_overrides(
         capture_settings_for_period(camera_settings, period),
@@ -692,12 +783,23 @@ async def start_sequence(
     }
 
     sent = await connections.send_to_node(node_id, message)
+    await connections.broadcast_dashboard(
+        {
+            "type": "capture.state.updated",
+            "node_id": node_id,
+            "capture_enabled": True,
+            "sequence_id": sequence_id,
+            "sent": sent,
+        }
+    )
 
     if not sent:
         return {
-            "status": "failed",
+            "status": "queued",
             "reason": "node_not_connected",
             "node_id": node_id,
+            "sequence_id": sequence_id,
+            "message": message,
         }
 
     return {
@@ -709,19 +811,44 @@ async def start_sequence(
 
 
 @app.post("/api/nodes/{node_id}/sequence/stop")
-async def stop_sequence(node_id: str, request: SequenceStopRequest | None = None):
+async def stop_sequence(
+    node_id: str,
+    request: SequenceStopRequest | None = None,
+    db: Session = Depends(get_db_session),
+):
+    settings_repo = NodeCameraSettingsRepository(db)
+    existing_settings = settings_repo.get_or_create(node_id)
+    sequence_id = request.sequence_id if request else existing_settings.current_sequence_id
+    settings_repo.update(
+        node_id,
+        {
+            "capture_enabled": False,
+            "current_sequence_id": None,
+        },
+    )
     message = {
         "type": "sequence.stop",
-        "sequence_id": request.sequence_id if request else None,
+        "sequence_id": sequence_id,
     }
 
     sent = await connections.send_to_node(node_id, message)
+    await connections.broadcast_dashboard(
+        {
+            "type": "capture.state.updated",
+            "node_id": node_id,
+            "capture_enabled": False,
+            "sequence_id": sequence_id,
+            "sent": sent,
+        }
+    )
 
     if not sent:
         return {
-            "status": "failed",
+            "status": "queued",
             "reason": "node_not_connected",
             "node_id": node_id,
+            "sequence_id": sequence_id,
+            "message": message,
         }
 
     return {
@@ -824,6 +951,7 @@ async def upload_capture(
     height: int | None = Form(default=None),
     metadata: str = Form(default="{}"),
     file: UploadFile = File(...),
+    db: Session = Depends(get_db_session),
 ):
     try:
         parsed_metadata = json.loads(metadata)
@@ -834,7 +962,8 @@ async def upload_capture(
     upload_format = safe_path_part(format.lower())
     original_name = safe_path_part(Path(file.filename or f"capture.{upload_format}").name)
     capture_id = f"cap_{uuid4().hex}"
-    archive_date, period = archive_period(parse_capture_datetime(parsed_metadata))
+    captured_at = parse_capture_datetime(parsed_metadata)
+    archive_date, period = archive_period(captured_at)
     filename = f"{capture_id}_{original_name}"
     capture_dir = settings.captures_dir / upload_node_id / archive_date / period
     output_path = capture_dir / filename
@@ -843,6 +972,16 @@ async def upload_capture(
 
     with output_path.open("wb") as output_file:
         shutil.copyfileobj(file.file, output_file)
+
+    overlay_settings = NodeOverlaySettingsRepository(db).get_or_create(upload_node_id)
+    apply_overlays_to_image(
+        output_path,
+        overlay_settings,
+        node_id=node_id,
+        captured_at=captured_at,
+        period=period,
+        timezone_name=settings.timezone,
+    )
 
     logger.info(
         "capture.uploaded",
@@ -855,20 +994,29 @@ async def upload_capture(
         size_bytes=output_path.stat().st_size,
     )
 
+    capture_record = capture_record_from_path(output_path)
+    await connections.broadcast_dashboard(
+        {
+            "type": "capture.uploaded",
+            "node_id": node_id,
+            "capture": capture_record,
+        }
+    )
+
     return {
         "status": "stored",
         "capture_id": capture_id,
         "node_id": node_id,
         "sequence_id": sequence_id,
-        "path": str(output_path),
-        "filename": filename,
-        "archive_date": archive_date,
-        "period": period,
+        "path": capture_record["path"],
+        "filename": capture_record["filename"],
+        "archive_date": capture_record["archive_date"],
+        "period": capture_record["period"],
         "format": upload_format,
         "width": width,
         "height": height,
         "metadata": parsed_metadata,
-        "size_bytes": output_path.stat().st_size,
+        "size_bytes": capture_record["size_bytes"],
     }
 
 
@@ -882,6 +1030,13 @@ async def node_websocket(websocket: WebSocket, node_id: str):
     try:
         repo.mark_online(node_id)
         logger.info("node.connected", node_id=node_id)
+        await connections.broadcast_dashboard(
+            {
+                "type": "node.updated",
+                "node_id": node_id,
+                "online": True,
+            }
+        )
 
         while True:
             message = await websocket.receive_json()
@@ -922,6 +1077,14 @@ async def node_websocket(websocket: WebSocket, node_id: str):
                 settings_repo = NodeCameraSettingsRepository(db)
                 camera_settings = settings_repo.get_or_create(node_id)
                 await websocket.send_json(config_update_message(camera_settings))
+                await connections.broadcast_dashboard(
+                    {
+                        "type": "node.updated",
+                        "node_id": node_id,
+                        "online": True,
+                        "message_type": message_type,
+                    }
+                )
 
             await websocket.send_json(
                 {
@@ -934,6 +1097,42 @@ async def node_websocket(websocket: WebSocket, node_id: str):
         connections.disconnect(node_id)
         repo.mark_offline(node_id)
         logger.warning("node.disconnected", node_id=node_id)
+        await connections.broadcast_dashboard(
+            {
+                "type": "node.updated",
+                "node_id": node_id,
+                "online": False,
+            }
+        )
 
     finally:
         db.close()
+
+
+@app.websocket("/ws/dashboard")
+async def dashboard_websocket(websocket: WebSocket):
+    await connections.connect_dashboard(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        connections.disconnect_dashboard(websocket)
+
+
+@app.get("/{frontend_path:path}", include_in_schema=False)
+async def frontend_route(frontend_path: str):
+    first_segment = frontend_path.split("/", 1)[0]
+
+    if first_segment not in {"monitor", "captures", "settings", "nodes"}:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    index_path = settings.frontend_dist_dir / "index.html"
+
+    if index_path.exists():
+        return FileResponse(index_path)
+
+    return await frontend_app()
+
+

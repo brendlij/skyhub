@@ -24,6 +24,7 @@ class ManagedNode:
 class ConnectionManager:
     def __init__(self):
         self._nodes: dict[str, ManagedNode] = {}
+        self._dashboards: set[WebSocket] = set()
 
     async def connect(self, node_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -99,3 +100,22 @@ class ConnectionManager:
 
         await node.websocket.send_json(message)
         return True
+
+    async def connect_dashboard(self, websocket: WebSocket):
+        await websocket.accept()
+        self._dashboards.add(websocket)
+
+    def disconnect_dashboard(self, websocket: WebSocket):
+        self._dashboards.discard(websocket)
+
+    async def broadcast_dashboard(self, message: dict):
+        disconnected = []
+
+        for websocket in self._dashboards:
+            try:
+                await websocket.send_json(message)
+            except Exception:
+                disconnected.append(websocket)
+
+        for websocket in disconnected:
+            self.disconnect_dashboard(websocket)

@@ -26,4 +26,7 @@ class NodeCameraSettings(Base):
     night_auto_gain: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     night_gain: Mapped[float] = mapped_column(Float, default=8, nullable=False)
 
+    capture_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    current_sequence_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
