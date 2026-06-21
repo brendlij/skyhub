@@ -542,7 +542,7 @@ def camera_settings_to_dict(camera_settings) -> dict:
         "interval_seconds": camera_settings.interval_seconds,
         "width": camera_settings.width,
         "height": camera_settings.height,
-        "format": camera_settings.format,
+        "format": camera_settings.format or "jpg",
         "day": {
             "auto_exposure": camera_settings.day_auto_exposure,
             "exposure_ms": camera_settings.day_exposure_ms,
@@ -587,7 +587,7 @@ def capture_settings_for_period(camera_settings, period: str) -> dict:
         "interval_seconds": camera_settings.interval_seconds,
         "width": camera_settings.width,
         "height": camera_settings.height,
-        "format": camera_settings.format,
+        "format": camera_settings.format or "jpg",
         "period": period,
         "auto_exposure": auto_exposure,
         "exposure_ms": exposure_ms,

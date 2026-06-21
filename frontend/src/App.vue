@@ -134,6 +134,10 @@ async function saveSettings() {
     body[field] = payloadValue(settings.value[field]);
   }
 
+  if (!body.format) {
+    body.format = "jpg";
+  }
+
   const result = await requestJson(`/api/nodes/${selectedNodeId.value}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

@@ -31,7 +31,7 @@ class MockCamera:
         gain = settings.get("gain")
         auto_exposure = bool(settings.get("auto_exposure", False))
         auto_gain = bool(settings.get("auto_gain", False))
-        image_format = str(settings.get("format", "jpg")).lower()
+        image_format = str(settings.get("format") or "jpg").lower()
 
         if image_format not in ["jpg", "jpeg"]:
             raise ValueError(f"MockCamera only supports jpg for now, got: {image_format}")

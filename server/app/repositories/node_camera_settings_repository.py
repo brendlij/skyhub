@@ -32,6 +32,9 @@ class NodeCameraSettingsRepository:
         settings = self.get_or_create(node_id)
 
         for field_name, value in values.items():
+            if field_name == "format" and value == "":
+                value = "jpg"
+
             if value is not None:
                 setattr(settings, field_name, value)
 
