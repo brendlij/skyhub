@@ -20,7 +20,7 @@ Examples:
 
 ```bash
 python skyhub.py standalone --node-id roof-pi
-python skyhub.py server --host 0.0.0.0 --port 8000
+python skyhub.py server --port 8000
 python skyhub.py node --node-id roof-pi --server-ws-base-url ws://skyhub.local:8000/ws/nodes
 python skyhub.py node --node-id pi5-hqcam --camera-driver picamera2 --server-ws-base-url ws://skyhub.local:8000/ws/nodes
 ```

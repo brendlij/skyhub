@@ -74,7 +74,12 @@ onBeforeUnmount(() => {
         >
           ‹
         </button>
-        <img :src="imageUrl" alt="Selected capture" />
+        <img
+          :src="imageUrl"
+          :width="capture.width || undefined"
+          :height="capture.height || undefined"
+          alt="Selected capture"
+        />
         <button
           class="lightbox-nav next"
           type="button"

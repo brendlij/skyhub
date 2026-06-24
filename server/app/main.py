@@ -738,6 +738,7 @@ def capture_record_from_path(file_path: Path) -> dict:
     period = relative_path.parts[2]
     original_path = settings.originals_dir / relative_path
     thumbnail_path = settings.thumbnails_dir / relative_path
+    width, height = image_dimensions(file_path)
 
     return {
         "node_id": node_id,
@@ -747,6 +748,9 @@ def capture_record_from_path(file_path: Path) -> dict:
         "path": str(file_path),
         "original_available": original_path.is_file(),
         "thumbnail_available": thumbnail_path.is_file(),
+        "width": width,
+        "height": height,
+        "aspect_ratio": width / height if width and height else None,
         "size_bytes": file_path.stat().st_size,
         "modified_at": datetime.fromtimestamp(
             file_path.stat().st_mtime,
@@ -762,6 +766,15 @@ def iter_capture_files():
     for file_path in settings.captures_dir.glob("*/*/*/*"):
         if file_path.is_file():
             yield file_path
+
+
+def image_dimensions(file_path: Path) -> tuple[int | None, int | None]:
+    try:
+        with Image.open(file_path) as image:
+            return image.width, image.height
+    except OSError:
+        logger.warning("capture.dimensions_failed", path=str(file_path))
+        return None, None
 
 
 def create_thumbnail(source_path: Path, thumbnail_path: Path, max_size: tuple[int, int] = (420, 236)) -> None:
@@ -1134,8 +1147,9 @@ async def upload_capture(
         "archive_date": capture_record["archive_date"],
         "period": capture_record["period"],
         "format": upload_format,
-        "width": width,
-        "height": height,
+        "width": capture_record["width"],
+        "height": capture_record["height"],
+        "aspect_ratio": capture_record["aspect_ratio"],
         "metadata": parsed_metadata,
         "size_bytes": capture_record["size_bytes"],
     }

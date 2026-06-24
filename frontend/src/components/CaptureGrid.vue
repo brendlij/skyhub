@@ -9,6 +9,14 @@ defineProps({
 });
 
 defineEmits(["select"]);
+
+function imageStyle(capture) {
+  if (!capture.width || !capture.height) return {};
+
+  return {
+    aspectRatio: `${capture.width} / ${capture.height}`
+  };
+}
 </script>
 
 <template>
@@ -20,8 +28,9 @@ defineEmits(["select"]);
       type="button"
       @click="$emit('select', capture)"
     >
-      <img :src="captureUrl(capture, { thumb: true })" alt="" loading="lazy" />
+      <img :src="captureUrl(capture, { thumb: true })" :style="imageStyle(capture)" alt="" loading="lazy" />
       <strong>{{ formatCaptureName(capture) }}</strong>
+      <small v-if="capture.width && capture.height">{{ capture.width }} x {{ capture.height }}</small>
       <span>{{ capture.filename }}</span>
     </button>
   </div>

@@ -13,6 +13,7 @@ const props = defineProps({
 });
 
 const draggingEntity = ref(null);
+const dragOffset = ref({ x: 0, y: 0 });
 const stage = ref(null);
 const previewImage = ref(null);
 const previewRect = ref({
@@ -36,9 +37,10 @@ function previewText(entity) {
 }
 
 function entityStyle(entity) {
-  const fontSize = Math.max(8, Number(entity.font_size) || 24) * previewRect.value.scale;
-  const paddingX = Math.max(2, fontSize * 0.25);
-  const paddingY = Math.max(1, fontSize * 0.18);
+  const nativeFontSize = Math.max(8, Number(entity.font_size) || 24);
+  const nativePadding = Math.max(5, nativeFontSize * 0.22);
+  const fontSize = nativeFontSize * previewRect.value.scale;
+  const padding = nativePadding * previewRect.value.scale;
   const translateX = entity.anchor?.includes("right")
     ? "-100%"
     : entity.anchor === "center"
@@ -57,8 +59,8 @@ function entityStyle(entity) {
     color: entity.color,
     background: hexWithOpacity(entity.background, entity.background_opacity),
     fontSize: `${fontSize}px`,
-    padding: `${paddingY}px ${paddingX}px`,
-    borderRadius: `${Math.max(2, fontSize * 0.18)}px`
+    padding: `${padding}px`,
+    borderRadius: `${Math.max(4, nativePadding) * previewRect.value.scale}px`
   };
 }
 
@@ -111,18 +113,42 @@ function hexWithOpacity(hex, opacity) {
   return `rgba(${red}, ${green}, ${blue}, ${Number(opacity ?? 0.35)})`;
 }
 
-function updateEntityPosition(event) {
+function pointerToImagePosition(event) {
   if (!draggingEntity.value || !stage.value) return;
 
   const rect = stage.value.getBoundingClientRect();
   const imageRect = previewRect.value;
-  draggingEntity.value.x = Math.min(1, Math.max(0, (event.clientX - rect.left - imageRect.left) / imageRect.width));
-  draggingEntity.value.y = Math.min(1, Math.max(0, (event.clientY - rect.top - imageRect.top) / imageRect.height));
+
+  if (!imageRect.width || !imageRect.height) return;
+
+  return {
+    x: (event.clientX - rect.left - imageRect.left) / imageRect.width,
+    y: (event.clientY - rect.top - imageRect.top) / imageRect.height
+  };
+}
+
+function updateEntityPosition(event) {
+  if (!draggingEntity.value) return;
+
+  const pointer = pointerToImagePosition(event);
+
+  if (!pointer) return;
+
+  draggingEntity.value.x = Math.min(1, Math.max(0, pointer.x - dragOffset.value.x));
+  draggingEntity.value.y = Math.min(1, Math.max(0, pointer.y - dragOffset.value.y));
 }
 
 function startDrag(entity, event) {
   draggingEntity.value = entity;
-  updateEntityPosition(event);
+  const pointer = pointerToImagePosition(event);
+
+  dragOffset.value = pointer
+    ? {
+        x: pointer.x - (Number(entity.x) || 0),
+        y: pointer.y - (Number(entity.y) || 0)
+      }
+    : { x: 0, y: 0 };
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
   window.addEventListener("pointermove", updateEntityPosition);
   window.addEventListener("pointerup", stopDrag, { once: true });
 }
@@ -130,6 +156,7 @@ function startDrag(entity, event) {
 function stopDrag() {
   window.removeEventListener("pointermove", updateEntityPosition);
   draggingEntity.value = null;
+  dragOffset.value = { x: 0, y: 0 };
 }
 
 function addTextEntity() {

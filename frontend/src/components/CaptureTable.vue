@@ -14,6 +14,14 @@ defineProps({
 });
 
 defineEmits(["select"]);
+
+function imageStyle(capture) {
+  if (!capture.width || !capture.height) return {};
+
+  return {
+    aspectRatio: `${capture.width} / ${capture.height}`
+  };
+}
 </script>
 
 <template>
@@ -35,7 +43,7 @@ defineEmits(["select"]);
         <tr v-for="capture in captures" :key="capture.path">
           <td>
             <button class="table-preview" type="button" @click="$emit('select', capture)">
-              <img :src="captureUrl(capture, { thumb: true })" alt="" loading="lazy" />
+              <img :src="captureUrl(capture, { thumb: true })" :style="imageStyle(capture)" alt="" loading="lazy" />
             </button>
           </td>
           <td>
@@ -47,7 +55,10 @@ defineEmits(["select"]);
             <span class="period-pill">{{ capture.period }}</span>
           </td>
           <td>{{ formatBytes(capture.size_bytes) }}</td>
-          <td class="filename-cell">{{ capture.filename }}</td>
+          <td class="filename-cell">
+            <span>{{ capture.filename }}</span>
+            <small v-if="capture.width && capture.height">{{ capture.width }} x {{ capture.height }}</small>
+          </td>
           <td>
             <button type="button" @click="$emit('select', capture)">Open</button>
           </td>
