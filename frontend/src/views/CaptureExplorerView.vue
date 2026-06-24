@@ -43,8 +43,31 @@ const groupedCaptures = computed(() => {
   return [...groups.values()].sort((a, b) => b.archive_date.localeCompare(a.archive_date));
 });
 
+const selectedCaptureIndex = computed(() => {
+  if (!selectedCapture.value) return -1;
+
+  return sortedCaptures.value.findIndex((capture) => capture.path === selectedCapture.value.path);
+});
+
+const hasPreviousCapture = computed(() => selectedCaptureIndex.value > 0);
+const hasNextCapture = computed(() => (
+  selectedCaptureIndex.value >= 0 && selectedCaptureIndex.value < sortedCaptures.value.length - 1
+));
+
 function openCapture(capture) {
   selectedCapture.value = capture;
+}
+
+function previousCapture() {
+  if (!hasPreviousCapture.value) return;
+
+  selectedCapture.value = sortedCaptures.value[selectedCaptureIndex.value - 1];
+}
+
+function nextCapture() {
+  if (!hasNextCapture.value) return;
+
+  selectedCapture.value = sortedCaptures.value[selectedCaptureIndex.value + 1];
 }
 
 function setSort(nextSortKey) {
@@ -64,8 +87,7 @@ loadCaptures().catch(() => {});
   <main class="workspace">
     <section class="page-heading">
       <div>
-        <h1>Capture Explorer</h1>
-        <p>Browse uploaded captures by archive date and day/night period.</p>
+        <h1>Captures</h1>
       </div>
       <div class="page-actions">
         <div class="segmented">
@@ -114,9 +136,16 @@ loadCaptures().catch(() => {});
       </section>
     </div>
     <section v-else class="panel">
-      <div class="content muted">No uploaded captures yet.</div>
+      <div class="content muted">No captures</div>
     </section>
 
-    <Lightbox :capture="selectedCapture" @close="selectedCapture = null" />
+    <Lightbox
+      :capture="selectedCapture"
+      :has-previous="hasPreviousCapture"
+      :has-next="hasNextCapture"
+      @close="selectedCapture = null"
+      @previous="previousCapture"
+      @next="nextCapture"
+    />
   </main>
 </template>

@@ -20,7 +20,7 @@ defineEmits(["select"]);
       type="button"
       @click="$emit('select', capture)"
     >
-      <img :src="captureUrl(capture)" alt="" loading="lazy" />
+      <img :src="captureUrl(capture, { thumb: true })" alt="" loading="lazy" />
       <strong>{{ formatCaptureName(capture) }}</strong>
       <span>{{ capture.filename }}</span>
     </button>

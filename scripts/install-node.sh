@@ -29,6 +29,9 @@ fi
 NODE_ID="${SKYHUB_NODE_NODE_ID:-}"
 SERVER_WS_BASE_URL="${SKYHUB_NODE_SERVER_WS_BASE_URL:-}"
 CAMERA_DRIVER="${SKYHUB_NODE_CAMERA_DRIVER:-picamera2}"
+ENVIRONMENT_SENSOR_DRIVER="${SKYHUB_NODE_ENVIRONMENT_SENSOR_DRIVER:-bme280}"
+BME280_I2C_BUS="${SKYHUB_NODE_BME280_I2C_BUS:-1}"
+BME280_I2C_ADDRESS="${SKYHUB_NODE_BME280_I2C_ADDRESS:-0x77}"
 
 if [[ -z "$NODE_ID" ]]; then
   NODE_ID="$(prompt_default "Node id" "pi5-hqcam")"
@@ -48,7 +51,12 @@ fi
 
 echo "Installing system packages..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip python3-picamera2
+sudo apt-get install -y python3-venv python3-pip python3-picamera2 i2c-tools
+
+if command -v raspi-config >/dev/null 2>&1; then
+  echo "Enabling I2C..."
+  sudo raspi-config nonint do_i2c 0 || echo "Could not enable I2C automatically; enable it with raspi-config."
+fi
 
 echo "Creating node virtual environment at $VENV_DIR..."
 python3 -m venv --system-site-packages "$VENV_DIR"
@@ -62,6 +70,10 @@ cat > "$ENV_FILE" <<EOF
 SKYHUB_NODE_NODE_ID=$NODE_ID
 SKYHUB_NODE_CAMERA_DRIVER=$CAMERA_DRIVER
 SKYHUB_NODE_SERVER_WS_BASE_URL=$SERVER_WS_BASE_URL
+SKYHUB_NODE_ENVIRONMENT_SENSOR_DRIVER=$ENVIRONMENT_SENSOR_DRIVER
+SKYHUB_NODE_ENVIRONMENT_INTERVAL_SECONDS=30
+SKYHUB_NODE_BME280_I2C_BUS=$BME280_I2C_BUS
+SKYHUB_NODE_BME280_I2C_ADDRESS=$BME280_I2C_ADDRESS
 EOF
 
 echo
@@ -73,4 +85,6 @@ echo
 echo "Current node config:"
 echo "  node id: $NODE_ID"
 echo "  camera driver: $CAMERA_DRIVER"
+echo "  environment sensor: $ENVIRONMENT_SENSOR_DRIVER"
+echo "  bme280 i2c: bus $BME280_I2C_BUS address $BME280_I2C_ADDRESS"
 echo "  server websocket base url: $SERVER_WS_BASE_URL"

@@ -1,14 +1,12 @@
 <script setup>
-import OverlayEditor from "../components/OverlayEditor.vue";
+import { formatBytes } from "../api/skyhub";
 import { useSkyHub } from "../composables/useSkyHub";
 
 const {
-  latestImageUrl,
   message,
-  overlaySettings,
-  saveOverlays,
   saveSettings,
-  settings
+  settings,
+  storageStats
 } = useSkyHub();
 </script>
 
@@ -17,11 +15,10 @@ const {
     <section class="page-heading">
       <div>
         <h1>Settings</h1>
-        <p>Server settings will live here too; node camera settings are active now.</p>
       </div>
     </section>
 
-    <div class="settings-layout">
+    <div class="settings-layout settings-layout-compact">
       <section class="panel">
         <h2>Node Camera</h2>
         <div class="content" v-if="settings">
@@ -93,25 +90,35 @@ const {
           </button>
           <div class="message">{{ message }}</div>
         </div>
-        <div class="content muted" v-else>Select a node to edit settings.</div>
+        <div class="content muted" v-else>No node selected</div>
       </section>
 
       <section class="panel">
-        <h2>Overlays</h2>
-        <div class="content" v-if="overlaySettings">
-          <OverlayEditor :overlays="overlaySettings" :image-url="latestImageUrl" />
-          <button type="button" class="primary save" @click="saveOverlays">
-            Save Overlay Settings
-          </button>
-        </div>
-        <div class="content muted" v-else>Select a node to edit overlays.</div>
-      </section>
-
-      <section class="panel">
-        <h2>Server</h2>
+        <h2>Storage</h2>
         <div class="content server-placeholder">
-          <strong>Coming next</strong>
-          <p>Location, timezone, archive retention, and upload policy should be DB-backed server settings.</p>
+          <div v-if="storageStats" class="storage-grid">
+            <div>
+              <span>Captures</span>
+              <strong>{{ formatBytes(storageStats.captures_bytes) }}</strong>
+            </div>
+            <div>
+              <span>Database</span>
+              <strong>{{ formatBytes(storageStats.database_bytes) }}</strong>
+            </div>
+            <div>
+              <span>Thumbnails</span>
+              <strong>{{ formatBytes(storageStats.thumbnails_bytes) }}</strong>
+            </div>
+            <div>
+              <span>Data total</span>
+              <strong>{{ formatBytes(storageStats.data_bytes) }}</strong>
+            </div>
+            <div>
+              <span>Disk free</span>
+              <strong>{{ formatBytes(storageStats.disk_free_bytes) }}</strong>
+            </div>
+          </div>
+          <p v-if="storageStats">{{ storageStats.data_dir }}</p>
         </div>
       </section>
     </div>

@@ -10,12 +10,12 @@ const { nodes, selectedNode, selectedNodeId, selectNode } = useSkyHub();
     <header class="topbar">
       <RouterLink class="brand" to="/monitor">
         <strong>SkyHub</strong>
-        <span>Allsky capture dashboard</span>
       </RouterLink>
 
       <nav class="main-nav" aria-label="Main navigation">
         <RouterLink to="/monitor">Monitor</RouterLink>
         <RouterLink to="/captures">Captures</RouterLink>
+        <RouterLink to="/overlays">Overlays</RouterLink>
         <RouterLink to="/settings">Settings</RouterLink>
         <RouterLink to="/nodes">Nodes</RouterLink>
       </nav>

@@ -10,7 +10,6 @@ const { deleteNode, nodes, selectedNodeId, selectNode } = useSkyHub();
     <section class="page-heading">
       <div>
         <h1>Nodes</h1>
-        <p>Connected and remembered camera nodes.</p>
       </div>
     </section>
 

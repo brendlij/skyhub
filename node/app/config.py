@@ -16,6 +16,10 @@ class NodeSettings(BaseSettings):
     reconnect_initial_delay_seconds: float = 1
     reconnect_max_delay_seconds: float = 30
     captures_dir: Path = NODE_DIR / "data" / "captures"
+    environment_sensor_driver: str = "mock"
+    environment_interval_seconds: int = 30
+    bme280_i2c_bus: int = 1
+    bme280_i2c_address: str = "0x77"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -43,6 +47,10 @@ class NodeSettings(BaseSettings):
             base_url = base_url.removesuffix("/ws/nodes")
 
         return f"{base_url}/api/captures/upload"
+
+    @property
+    def bme280_i2c_address_int(self) -> int:
+        return int(str(self.bme280_i2c_address), 0)
 
 
 @lru_cache

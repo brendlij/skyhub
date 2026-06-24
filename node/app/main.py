@@ -11,6 +11,8 @@ import websockets
 from app.camera.base import CameraDevice
 from app.camera.factory import create_camera
 from app.config import get_settings
+from app.environment.base import EnvironmentSensor
+from app.environment.factory import create_environment_sensor
 from app.storage.paths import CAPTURES_DIR
 
 
@@ -18,6 +20,7 @@ logger = structlog.get_logger()
 node_settings = get_settings()
 
 camera: CameraDevice = create_camera(node_settings.camera_driver)
+environment_sensor: EnvironmentSensor | None = None
 active_capture_settings: dict[str, Any] = {
     "interval_seconds": 60,
     "width": 1920,
@@ -85,8 +88,14 @@ async def send_hello(websocket):
             "supports_gain": camera_info.supports_gain,
             "supported_formats": camera_info.supported_formats,
             "supports_jpg": "jpg" in camera_info.supported_formats,
+            "environment_sensor": node_settings.environment_sensor_driver,
+            "environment_interval_seconds": node_settings.environment_interval_seconds,
         },
     }
+
+    if node_settings.environment_sensor_driver.lower() == "bme280":
+        message["capabilities"]["bme280_i2c_bus"] = node_settings.bme280_i2c_bus
+        message["capabilities"]["bme280_i2c_address"] = hex(node_settings.bme280_i2c_address_int)
 
     await send_json(websocket, message)
     logger.info("node.hello.sent", node_id=node_settings.node_id)
@@ -103,6 +112,55 @@ async def heartbeat_loop(websocket):
         logger.info("node.heartbeat.sent", node_id=node_settings.node_id)
 
         await asyncio.sleep(node_settings.heartbeat_interval_seconds)
+
+
+async def environment_loop(websocket):
+    global environment_sensor
+
+    if node_settings.environment_sensor_driver.lower() in {"none", "disabled", "off"}:
+        logger.info("environment.disabled")
+        return
+
+    while True:
+        try:
+            if environment_sensor is None:
+                environment_sensor = create_environment_sensor(node_settings)
+
+            if environment_sensor is None:
+                return
+
+            reading = await asyncio.to_thread(environment_sensor.read)
+            payload = reading.to_message_payload()
+
+            await send_json(
+                websocket,
+                {
+                    "type": "environment.telemetry",
+                    "node_id": node_settings.node_id,
+                    "sensor": environment_sensor.driver,
+                    **payload,
+                },
+            )
+            logger.info(
+                "environment.telemetry.sent",
+                node_id=node_settings.node_id,
+                sensor=environment_sensor.driver,
+                temperature_c=payload["temperature_c"],
+                humidity_percent=payload["humidity_percent"],
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as error:
+            logger.warning(
+                "environment.read.failed",
+                driver=node_settings.environment_sensor_driver,
+                error=str(error),
+            )
+            environment_sensor = None
+
+        await asyncio.sleep(max(1, node_settings.environment_interval_seconds))
 
 
 async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: dict[str, Any]):
@@ -416,8 +474,9 @@ async def run_connection():
 
         try:
             heartbeat_task = asyncio.create_task(heartbeat_loop(websocket))
+            environment_task = asyncio.create_task(environment_loop(websocket))
             receive_task = asyncio.create_task(receive_loop(websocket))
-            tasks = {heartbeat_task, receive_task}
+            tasks = {heartbeat_task, environment_task, receive_task}
 
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 

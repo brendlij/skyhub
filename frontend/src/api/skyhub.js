@@ -9,8 +9,15 @@ export async function requestJson(url, options = {}) {
   return response.json();
 }
 
-export function captureUrl(capture) {
-  return `/api/captures/${capture.node_id}/${capture.archive_date}/${capture.period}/${capture.filename}`;
+export function captureUrl(capture, options = {}) {
+  const url = `/api/captures/${capture.node_id}/${capture.archive_date}/${capture.period}/${capture.filename}`;
+  const params = new URLSearchParams();
+
+  if (options.raw) params.set("raw", "true");
+  if (options.thumb) params.set("thumb", "true");
+
+  const query = params.toString();
+  return query ? `${url}?${query}` : url;
 }
 
 export function formatBytes(bytes) {

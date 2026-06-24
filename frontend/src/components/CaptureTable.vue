@@ -35,7 +35,7 @@ defineEmits(["select"]);
         <tr v-for="capture in captures" :key="capture.path">
           <td>
             <button class="table-preview" type="button" @click="$emit('select', capture)">
-              <img :src="captureUrl(capture)" alt="" loading="lazy" />
+              <img :src="captureUrl(capture, { thumb: true })" alt="" loading="lazy" />
             </button>
           </td>
           <td>

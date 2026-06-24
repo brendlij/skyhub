@@ -31,6 +31,14 @@ class ServerSettings(BaseSettings):
         return self.data_dir / "captures"
 
     @property
+    def originals_dir(self) -> Path:
+        return self.data_dir / "originals"
+
+    @property
+    def thumbnails_dir(self) -> Path:
+        return self.data_dir / "thumbnails"
+
+    @property
     def frontend_dist_dir(self) -> Path:
         return REPO_ROOT / "frontend" / "dist"
 

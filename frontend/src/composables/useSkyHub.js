@@ -23,6 +23,8 @@ const latest = ref(null);
 const latestImageUrl = ref(null);
 const captures = ref([]);
 const overlaySettings = ref(null);
+const environmentTelemetry = ref(null);
+const storageStats = ref(null);
 const message = ref("");
 const loading = ref(false);
 let initialized = false;
@@ -92,6 +94,23 @@ async function loadOverlays() {
   overlaySettings.value = await requestJson(`/api/nodes/${selectedNodeId.value}/overlays`);
 }
 
+async function loadEnvironmentTelemetry() {
+  if (!selectedNodeId.value) {
+    environmentTelemetry.value = null;
+    return;
+  }
+
+  try {
+    environmentTelemetry.value = await requestJson(`/api/nodes/${selectedNodeId.value}/environment`);
+  } catch {
+    environmentTelemetry.value = null;
+  }
+}
+
+async function loadStorageStats() {
+  storageStats.value = await requestJson("/api/storage");
+}
+
 async function loadLatest() {
   if (!selectedNodeId.value) {
     latest.value = null;
@@ -130,7 +149,14 @@ async function refreshDashboard() {
 
   try {
     await loadNodes();
-    await Promise.all([loadSettings(), loadOverlays(), loadLatest(), loadCaptures()]);
+    await Promise.all([
+      loadSettings(),
+      loadOverlays(),
+      loadEnvironmentTelemetry(),
+      loadLatest(),
+      loadCaptures(),
+      loadStorageStats()
+    ]);
   } finally {
     loading.value = false;
   }
@@ -138,7 +164,7 @@ async function refreshDashboard() {
 
 async function selectNode(nodeId) {
   selectedNodeId.value = nodeId;
-  await Promise.all([loadSettings(), loadOverlays(), loadLatest(), loadCaptures()]);
+  await Promise.all([loadSettings(), loadOverlays(), loadEnvironmentTelemetry(), loadLatest(), loadCaptures()]);
 }
 
 async function deleteNode(nodeId) {
@@ -243,6 +269,7 @@ async function applyCaptureUploaded(event) {
 function handleDashboardEvent(event) {
   if (event.type === "capture.uploaded") {
     applyCaptureUploaded(event).catch(() => {});
+    loadStorageStats().catch(() => {});
     return;
   }
 
@@ -258,6 +285,11 @@ function handleDashboardEvent(event) {
 
   if (event.type === "capture.state.updated" && event.node_id === selectedNodeId.value) {
     loadSettings().catch(() => {});
+    return;
+  }
+
+  if (event.type === "environment.updated" && event.node_id === selectedNodeId.value) {
+    environmentTelemetry.value = event.telemetry;
     return;
   }
 
@@ -312,12 +344,16 @@ export function useSkyHub() {
     latestImageUrl,
     captures,
     overlaySettings,
+    environmentTelemetry,
+    storageStats,
     message,
     loading,
     captureUrl,
     deleteNode,
     loadCaptures,
+    loadEnvironmentTelemetry,
     loadOverlays,
+    loadStorageStats,
     refreshDashboard,
     saveSettings,
     saveOverlays,

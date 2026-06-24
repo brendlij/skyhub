@@ -14,11 +14,13 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 import structlog
+from PIL import Image
 
 from app.db.database import SessionLocal, create_db_tables, get_db_session
 from app.config import get_settings
 from app.repositories.node_repository import NodeRepository
 from app.repositories.node_camera_settings_repository import NodeCameraSettingsRepository
+from app.repositories.node_environment_repository import NodeEnvironmentRepository
 from app.repositories.node_overlay_settings_repository import NodeOverlaySettingsRepository
 from app.realtime.connection_manager import ConnectionManager
 from app.overlays import apply_overlays_to_image
@@ -437,6 +439,31 @@ async def list_nodes(db: Session = Depends(get_db_session)):
     }
 
 
+@app.get("/api/storage")
+async def storage_stats():
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(settings.data_dir)
+    captures_bytes = directory_size(settings.captures_dir)
+    thumbnails_bytes = directory_size(settings.thumbnails_dir)
+    database_bytes = settings.database_path.stat().st_size if settings.database_path.exists() else 0
+    data_bytes = directory_size(settings.data_dir)
+
+    return {
+        "data_dir": str(settings.data_dir),
+        "captures_dir": str(settings.captures_dir),
+        "thumbnails_dir": str(settings.thumbnails_dir),
+        "database_path": str(settings.database_path),
+        "data_bytes": data_bytes,
+        "captures_bytes": captures_bytes,
+        "thumbnails_bytes": thumbnails_bytes,
+        "database_bytes": database_bytes,
+        "other_data_bytes": max(0, data_bytes - captures_bytes - thumbnails_bytes - database_bytes),
+        "disk_total_bytes": usage.total,
+        "disk_used_bytes": usage.used,
+        "disk_free_bytes": usage.free,
+    }
+
+
 @app.delete("/api/nodes/{node_id}")
 async def delete_node(node_id: str, db: Session = Depends(get_db_session)):
     managed_node = connections.get_node(node_id)
@@ -524,6 +551,22 @@ def safe_path_part(value: str) -> str:
     ).strip("._") or "unknown"
 
 
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+
+    total = 0
+
+    for file_path in path.rglob("*"):
+        if file_path.is_file():
+            try:
+                total += file_path.stat().st_size
+            except OSError:
+                logger.warning("storage.file_size_failed", path=str(file_path))
+
+    return total
+
+
 def parse_capture_datetime(parsed_metadata: dict) -> datetime:
     captured_at = parsed_metadata.get("captured_at")
 
@@ -537,6 +580,22 @@ def parse_capture_datetime(parsed_metadata: dict) -> datetime:
             logger.warning("capture.timestamp.invalid", captured_at=captured_at)
 
     return datetime.now(timezone.utc)
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("datetime.invalid", value=value)
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
 
 
 def archive_period(captured_at: datetime) -> tuple[str, str]:
@@ -596,6 +655,19 @@ def overlay_settings_to_dict(overlay_settings) -> dict:
         "enabled": overlay_settings.enabled,
         "entities": overlay_settings.entities or [],
         "updated_at": overlay_settings.updated_at.isoformat() if overlay_settings.updated_at else None,
+    }
+
+
+def environment_to_dict(environment) -> dict:
+    return {
+        "node_id": environment.node_id,
+        "sensor": environment.sensor_driver,
+        "temperature_c": environment.temperature_c,
+        "humidity_percent": environment.humidity_percent,
+        "pressure_hpa": environment.pressure_hpa,
+        "dew_point_c": environment.dew_point_c,
+        "captured_at": environment.captured_at.isoformat() if environment.captured_at else None,
+        "updated_at": environment.updated_at.isoformat() if environment.updated_at else None,
     }
 
 
@@ -664,6 +736,8 @@ def capture_record_from_path(file_path: Path) -> dict:
     node_id = relative_path.parts[0]
     archive_date = relative_path.parts[1]
     period = relative_path.parts[2]
+    original_path = settings.originals_dir / relative_path
+    thumbnail_path = settings.thumbnails_dir / relative_path
 
     return {
         "node_id": node_id,
@@ -671,6 +745,8 @@ def capture_record_from_path(file_path: Path) -> dict:
         "period": period,
         "filename": file_path.name,
         "path": str(file_path),
+        "original_available": original_path.is_file(),
+        "thumbnail_available": thumbnail_path.is_file(),
         "size_bytes": file_path.stat().st_size,
         "modified_at": datetime.fromtimestamp(
             file_path.stat().st_mtime,
@@ -686,6 +762,14 @@ def iter_capture_files():
     for file_path in settings.captures_dir.glob("*/*/*/*"):
         if file_path.is_file():
             yield file_path
+
+
+def create_thumbnail(source_path: Path, thumbnail_path: Path, max_size: tuple[int, int] = (420, 236)) -> None:
+    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with Image.open(source_path) as image:
+        image.thumbnail(max_size)
+        image.convert("RGB").save(thumbnail_path, format="JPEG", quality=82, optimize=True)
 
 
 @app.get("/api/nodes/{node_id}/settings")
@@ -753,6 +837,16 @@ async def update_node_overlays(
     )
 
     return payload
+
+
+@app.get("/api/nodes/{node_id}/environment")
+async def get_node_environment(node_id: str, db: Session = Depends(get_db_session)):
+    environment = NodeEnvironmentRepository(db).get(node_id)
+
+    if environment is None:
+        raise HTTPException(status_code=404, detail="No environment telemetry for node")
+
+    return environment_to_dict(environment)
 
 
 @app.post("/api/nodes/{node_id}/sequence/start")
@@ -916,20 +1010,38 @@ async def get_capture_file(
     archive_date: str,
     period: str,
     filename: str,
+    raw: bool = False,
+    thumb: bool = False,
 ):
     safe_node_id = safe_path_part(node_id)
     safe_archive_date = safe_path_part(archive_date)
     safe_period = safe_path_part(period)
     safe_filename = safe_path_part(filename)
-    file_path = settings.captures_dir / safe_node_id / safe_archive_date / safe_period / safe_filename
+    rendered_file_path = settings.captures_dir / safe_node_id / safe_archive_date / safe_period / safe_filename
+    original_file_path = settings.originals_dir / safe_node_id / safe_archive_date / safe_period / safe_filename
+    thumbnail_file_path = settings.thumbnails_dir / safe_node_id / safe_archive_date / safe_period / safe_filename
+
+    if thumb and thumbnail_file_path.is_file():
+        file_path = thumbnail_file_path
+        root_dir = settings.thumbnails_dir
+    elif thumb and rendered_file_path.is_file():
+        create_thumbnail(rendered_file_path, thumbnail_file_path)
+        file_path = thumbnail_file_path
+        root_dir = settings.thumbnails_dir
+    elif raw and original_file_path.is_file():
+        file_path = original_file_path
+        root_dir = settings.originals_dir
+    else:
+        file_path = rendered_file_path
+        root_dir = settings.captures_dir
 
     try:
-        resolved_captures_dir = settings.captures_dir.resolve()
+        resolved_root_dir = root_dir.resolve()
         resolved_file_path = file_path.resolve()
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Capture not found")
 
-    if not resolved_file_path.is_relative_to(resolved_captures_dir):
+    if not resolved_file_path.is_relative_to(resolved_root_dir):
         raise HTTPException(status_code=400, detail="Invalid capture path")
 
     if not resolved_file_path.is_file():
@@ -967,11 +1079,19 @@ async def upload_capture(
     filename = f"{capture_id}_{original_name}"
     capture_dir = settings.captures_dir / upload_node_id / archive_date / period
     output_path = capture_dir / filename
+    original_dir = settings.originals_dir / upload_node_id / archive_date / period
+    original_path = original_dir / filename
+    thumbnail_dir = settings.thumbnails_dir / upload_node_id / archive_date / period
+    thumbnail_path = thumbnail_dir / filename
 
     capture_dir.mkdir(parents=True, exist_ok=True)
+    original_dir.mkdir(parents=True, exist_ok=True)
+    thumbnail_dir.mkdir(parents=True, exist_ok=True)
 
     with output_path.open("wb") as output_file:
         shutil.copyfileobj(file.file, output_file)
+
+    shutil.copy2(output_path, original_path)
 
     overlay_settings = NodeOverlaySettingsRepository(db).get_or_create(upload_node_id)
     apply_overlays_to_image(
@@ -982,6 +1102,7 @@ async def upload_capture(
         period=period,
         timezone_name=settings.timezone,
     )
+    create_thumbnail(output_path, thumbnail_path)
 
     logger.info(
         "capture.uploaded",
@@ -1086,6 +1207,32 @@ async def node_websocket(websocket: WebSocket, node_id: str):
                     }
                 )
 
+            elif message_type == "environment.telemetry":
+                environment = NodeEnvironmentRepository(db).upsert(
+                    node_id=node_id,
+                    sensor_driver=message.get("sensor"),
+                    temperature_c=float(message["temperature_c"]),
+                    humidity_percent=float(message["humidity_percent"]),
+                    pressure_hpa=(
+                        float(message["pressure_hpa"])
+                        if message.get("pressure_hpa") is not None
+                        else None
+                    ),
+                    dew_point_c=(
+                        float(message["dew_point_c"])
+                        if message.get("dew_point_c") is not None
+                        else None
+                    ),
+                    captured_at=parse_iso_datetime(message.get("captured_at")),
+                )
+                await connections.broadcast_dashboard(
+                    {
+                        "type": "environment.updated",
+                        "node_id": node_id,
+                        "telemetry": environment_to_dict(environment),
+                    }
+                )
+
             await websocket.send_json(
                 {
                     "type": "server.ack",
@@ -1125,7 +1272,7 @@ async def dashboard_websocket(websocket: WebSocket):
 async def frontend_route(frontend_path: str):
     first_segment = frontend_path.split("/", 1)[0]
 
-    if first_segment not in {"monitor", "captures", "settings", "nodes"}:
+    if first_segment not in {"monitor", "captures", "overlays", "settings", "nodes"}:
         raise HTTPException(status_code=404, detail="Not found")
 
     index_path = settings.frontend_dist_dir / "index.html"
