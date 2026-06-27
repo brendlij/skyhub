@@ -24,6 +24,7 @@ const latestImageUrl = ref(null);
 const captures = ref([]);
 const overlaySettings = ref(null);
 const environmentTelemetry = ref(null);
+const heaterState = ref(null);
 const storageStats = ref(null);
 const message = ref("");
 const loading = ref(false);
@@ -107,6 +108,15 @@ async function loadEnvironmentTelemetry() {
   }
 }
 
+async function loadHeaterState() {
+  if (!selectedNodeId.value) {
+    heaterState.value = null;
+    return;
+  }
+
+  heaterState.value = await requestJson(`/api/nodes/${selectedNodeId.value}/heater`);
+}
+
 async function loadStorageStats() {
   storageStats.value = await requestJson("/api/storage");
 }
@@ -153,6 +163,7 @@ async function refreshDashboard() {
       loadSettings(),
       loadOverlays(),
       loadEnvironmentTelemetry(),
+      loadHeaterState(),
       loadLatest(),
       loadCaptures(),
       loadStorageStats()
@@ -164,7 +175,7 @@ async function refreshDashboard() {
 
 async function selectNode(nodeId) {
   selectedNodeId.value = nodeId;
-  await Promise.all([loadSettings(), loadOverlays(), loadEnvironmentTelemetry(), loadLatest(), loadCaptures()]);
+  await Promise.all([loadSettings(), loadOverlays(), loadEnvironmentTelemetry(), loadHeaterState(), loadLatest(), loadCaptures()]);
 }
 
 async function deleteNode(nodeId) {
@@ -241,6 +252,19 @@ async function stopCapture() {
   await loadSettings();
 }
 
+async function setHeaterEnabled(enabled) {
+  if (!selectedNodeId.value) return;
+
+  const result = await requestJson(`/api/nodes/${selectedNodeId.value}/heater`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled })
+  });
+
+  heaterState.value = result.heater;
+  setMessage(result.node_notified ? "Heater updated" : "Heater setting saved");
+}
+
 function dashboardWebSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws/dashboard`;
@@ -290,6 +314,11 @@ function handleDashboardEvent(event) {
 
   if (event.type === "environment.updated" && event.node_id === selectedNodeId.value) {
     environmentTelemetry.value = event.telemetry;
+    return;
+  }
+
+  if (event.type === "heater.updated" && event.node_id === selectedNodeId.value) {
+    heaterState.value = event.heater;
     return;
   }
 
@@ -345,6 +374,7 @@ export function useSkyHub() {
     captures,
     overlaySettings,
     environmentTelemetry,
+    heaterState,
     storageStats,
     message,
     loading,
@@ -352,12 +382,14 @@ export function useSkyHub() {
     deleteNode,
     loadCaptures,
     loadEnvironmentTelemetry,
+    loadHeaterState,
     loadOverlays,
     loadStorageStats,
     refreshDashboard,
     saveSettings,
     saveOverlays,
     selectNode,
+    setHeaterEnabled,
     setMessage,
     startCapture,
     stopCapture

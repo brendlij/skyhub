@@ -13,6 +13,8 @@ from app.camera.factory import create_camera
 from app.config import get_settings
 from app.environment.base import EnvironmentSensor
 from app.environment.factory import create_environment_sensor
+from app.heater.base import HeaterController, HeaterState
+from app.heater.factory import create_heater_controller
 from app.storage.paths import CAPTURES_DIR
 
 
@@ -21,6 +23,7 @@ node_settings = get_settings()
 
 camera: CameraDevice = create_camera(node_settings.camera_driver)
 environment_sensor: EnvironmentSensor | None = None
+heater: HeaterController | None = None
 active_capture_settings: dict[str, Any] = {
     "interval_seconds": 60,
     "width": 1920,
@@ -35,6 +38,19 @@ active_capture_settings: dict[str, Any] = {
 active_node_settings: dict[str, Any] = {}
 active_sequence_task: asyncio.Task | None = None
 active_sequence_id: str | None = None
+
+
+def initialize_heater() -> HeaterController | None:
+    try:
+        return create_heater_controller(node_settings)
+    except Exception as error:
+        logger.warning(
+            "heater.initialization.failed",
+            driver=node_settings.heater_driver,
+            gpio_pin=node_settings.heater_gpio_pin,
+            error=str(error),
+        )
+        return None
 
 
 async def send_json(websocket, message: dict[str, Any]):
@@ -75,7 +91,13 @@ async def upload_capture(sequence_id: str, capture_result) -> dict[str, Any]:
 
 
 async def send_hello(websocket):
+    global heater
+
+    if heater is None:
+        heater = initialize_heater()
+
     camera_info = camera.get_info()
+    heater_state = heater.get_state() if heater else None
     message = {
         "type": "node.hello",
         "node_id": node_settings.node_id,
@@ -90,6 +112,8 @@ async def send_hello(websocket):
             "supports_jpg": "jpg" in camera_info.supported_formats,
             "environment_sensor": node_settings.environment_sensor_driver,
             "environment_interval_seconds": node_settings.environment_interval_seconds,
+            "heater": heater_state.driver if heater_state else "disabled",
+            "heater_gpio_pin": heater_state.gpio_pin if heater_state else None,
         },
     }
 
@@ -99,6 +123,28 @@ async def send_hello(websocket):
 
     await send_json(websocket, message)
     logger.info("node.hello.sent", node_id=node_settings.node_id)
+
+
+def heater_state_payload(state: HeaterState | None) -> dict[str, Any]:
+    return {
+        "enabled": bool(state.enabled) if state else False,
+        "driver": state.driver if state else "disabled",
+        "gpio_pin": state.gpio_pin if state else None,
+    }
+
+
+async def send_heater_state(websocket, state: HeaterState | None = None):
+    if state is None and heater is not None:
+        state = heater.get_state()
+
+    await send_json(
+        websocket,
+        {
+            "type": "heater.state",
+            "node_id": node_settings.node_id,
+            **heater_state_payload(state),
+        },
+    )
 
 
 async def heartbeat_loop(websocket):
@@ -397,6 +443,8 @@ async def stop_sequence(
 
 
 async def receive_loop(websocket):
+    global heater
+
     async for raw_message in websocket:
         message = json.loads(raw_message)
         message_type = message.get("type")
@@ -435,6 +483,25 @@ async def receive_loop(websocket):
 
         elif message_type == "config.update":
             await apply_config_update(websocket=websocket, message=message)
+
+        elif message_type == "heater.set":
+            requested_enabled = bool(message.get("enabled", False))
+
+            if heater is None:
+                heater = initialize_heater()
+
+            if heater is None:
+                await send_heater_state(websocket, None)
+                continue
+
+            state = heater.set_enabled(requested_enabled)
+            logger.info(
+                "heater.updated",
+                enabled=state.enabled,
+                driver=state.driver,
+                gpio_pin=state.gpio_pin,
+            )
+            await send_heater_state(websocket, state)
 
 
 async def cancel_active_sequence(reason: str):

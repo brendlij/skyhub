@@ -3,8 +3,10 @@ import { formatBytes } from "../api/skyhub";
 import { useSkyHub } from "../composables/useSkyHub";
 
 const {
+  heaterState,
   message,
   saveSettings,
+  setHeaterEnabled,
   settings,
   storageStats
 } = useSkyHub();
@@ -91,6 +93,38 @@ const {
           <div class="message">{{ message }}</div>
         </div>
         <div class="content muted" v-else>No node selected</div>
+      </section>
+
+      <section class="panel">
+        <h2>Manual Heater</h2>
+        <div class="content server-placeholder">
+          <div v-if="heaterState" class="storage-grid">
+            <div>
+              <span>Desired</span>
+              <strong>{{ heaterState.desired_enabled ? "On" : "Off" }}</strong>
+            </div>
+            <div>
+              <span>Actual</span>
+              <strong>{{ heaterState.actual_enabled ? "On" : "Off" }}</strong>
+            </div>
+            <div>
+              <span>Driver</span>
+              <strong>{{ heaterState.driver || "-" }}</strong>
+            </div>
+            <div>
+              <span>GPIO</span>
+              <strong>{{ heaterState.gpio_pin || "-" }}</strong>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="primary" :disabled="!heaterState" @click="setHeaterEnabled(true)">
+              Turn on
+            </button>
+            <button type="button" :disabled="!heaterState" @click="setHeaterEnabled(false)">
+              Turn off
+            </button>
+          </div>
+        </div>
       </section>
 
       <section class="panel">

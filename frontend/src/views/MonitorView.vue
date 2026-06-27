@@ -8,6 +8,7 @@ const {
   latest,
   latestImageUrl,
   environmentTelemetry,
+  heaterState,
   loading,
   message,
   nodes,
@@ -15,12 +16,26 @@ const {
   settings,
   storageStats,
   refreshDashboard,
+  setHeaterEnabled,
   startCapture,
   stopCapture
 } = useSkyHub();
 
 const onlineCount = computed(() => nodes.value.filter((node) => node.online).length);
 const captureState = computed(() => settings.value?.capture_enabled ? "Capturing" : "Idle");
+const heaterSummary = computed(() => {
+  if (!heaterState.value) return "Unknown";
+
+  return heaterState.value.actual_enabled ? "On" : "Off";
+});
+const heaterDetails = computed(() => {
+  if (!heaterState.value) return "No state yet";
+
+  const desired = heaterState.value.desired_enabled ? "desired on" : "desired off";
+  const pin = heaterState.value.gpio_pin ? `GPIO ${heaterState.value.gpio_pin}` : heaterState.value.driver || "heater";
+
+  return `${desired} - ${pin}`;
+});
 const environmentSummary = computed(() => {
   if (!environmentTelemetry.value) return "No data";
 
@@ -94,6 +109,21 @@ const environmentDetails = computed(() => {
         <span>ENV</span>
         <strong>{{ environmentSummary }}</strong>
         <small>{{ environmentDetails }}</small>
+      </section>
+      <section class="panel stat-card">
+        <span>HEATER</span>
+        <strong>{{ heaterSummary }}</strong>
+        <small>{{ heaterDetails }}</small>
+        <div class="stat-actions">
+          <button
+            type="button"
+            :class="{ primary: heaterState?.desired_enabled }"
+            :disabled="!selectedNode"
+            @click="setHeaterEnabled(!heaterState?.desired_enabled)"
+          >
+            {{ heaterState?.desired_enabled ? "Turn off" : "Turn on" }}
+          </button>
+        </div>
       </section>
       <section class="panel stat-card">
         <span>CAPTURES</span>

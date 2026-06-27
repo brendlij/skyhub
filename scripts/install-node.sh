@@ -32,6 +32,8 @@ CAMERA_DRIVER="${SKYHUB_NODE_CAMERA_DRIVER:-picamera2}"
 ENVIRONMENT_SENSOR_DRIVER="${SKYHUB_NODE_ENVIRONMENT_SENSOR_DRIVER:-bme280}"
 BME280_I2C_BUS="${SKYHUB_NODE_BME280_I2C_BUS:-1}"
 BME280_I2C_ADDRESS="${SKYHUB_NODE_BME280_I2C_ADDRESS:-0x77}"
+HEATER_DRIVER="${SKYHUB_NODE_HEATER_DRIVER:-gpiozero}"
+HEATER_GPIO_PIN="${SKYHUB_NODE_HEATER_GPIO_PIN:-23}"
 
 if [[ -z "$NODE_ID" ]]; then
   NODE_ID="$(prompt_default "Node id" "pi5-hqcam")"
@@ -51,7 +53,7 @@ fi
 
 echo "Installing system packages..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip python3-picamera2 i2c-tools
+sudo apt-get install -y python3-venv python3-pip python3-picamera2 python3-gpiozero i2c-tools
 
 if command -v raspi-config >/dev/null 2>&1; then
   echo "Enabling I2C..."
@@ -74,6 +76,9 @@ SKYHUB_NODE_ENVIRONMENT_SENSOR_DRIVER=$ENVIRONMENT_SENSOR_DRIVER
 SKYHUB_NODE_ENVIRONMENT_INTERVAL_SECONDS=30
 SKYHUB_NODE_BME280_I2C_BUS=$BME280_I2C_BUS
 SKYHUB_NODE_BME280_I2C_ADDRESS=$BME280_I2C_ADDRESS
+SKYHUB_NODE_HEATER_DRIVER=$HEATER_DRIVER
+SKYHUB_NODE_HEATER_GPIO_PIN=$HEATER_GPIO_PIN
+SKYHUB_NODE_HEATER_ACTIVE_HIGH=true
 EOF
 
 echo
@@ -87,4 +92,5 @@ echo "  node id: $NODE_ID"
 echo "  camera driver: $CAMERA_DRIVER"
 echo "  environment sensor: $ENVIRONMENT_SENSOR_DRIVER"
 echo "  bme280 i2c: bus $BME280_I2C_BUS address $BME280_I2C_ADDRESS"
+echo "  heater: $HEATER_DRIVER on GPIO $HEATER_GPIO_PIN"
 echo "  server websocket base url: $SERVER_WS_BASE_URL"

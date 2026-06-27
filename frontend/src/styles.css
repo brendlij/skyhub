@@ -303,6 +303,14 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.stat-actions {
+  margin-top: 6px;
+}
+
+.stat-actions button {
+  width: 100%;
+}
+
 .status {
   display: inline-flex;
   align-items: center;

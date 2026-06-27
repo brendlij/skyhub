@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.repositories.node_repository import NodeRepository
 from app.repositories.node_camera_settings_repository import NodeCameraSettingsRepository
 from app.repositories.node_environment_repository import NodeEnvironmentRepository
+from app.repositories.node_heater_state_repository import NodeHeaterStateRepository
 from app.repositories.node_overlay_settings_repository import NodeOverlaySettingsRepository
 from app.realtime.connection_manager import ConnectionManager
 from app.overlays import apply_overlays_to_image
@@ -544,6 +545,10 @@ class NodeOverlaySettingsUpdate(BaseModel):
     entities: list[OverlayEntity] | None = None
 
 
+class NodeHeaterStateUpdate(BaseModel):
+    enabled: bool
+
+
 def safe_path_part(value: str) -> str:
     return "".join(
         character if character.isalnum() or character in ["-", "_", "."] else "_"
@@ -668,6 +673,17 @@ def environment_to_dict(environment) -> dict:
         "dew_point_c": environment.dew_point_c,
         "captured_at": environment.captured_at.isoformat() if environment.captured_at else None,
         "updated_at": environment.updated_at.isoformat() if environment.updated_at else None,
+    }
+
+
+def heater_state_to_dict(heater_state) -> dict:
+    return {
+        "node_id": heater_state.node_id,
+        "desired_enabled": heater_state.desired_enabled,
+        "actual_enabled": heater_state.actual_enabled,
+        "driver": heater_state.driver,
+        "gpio_pin": heater_state.gpio_pin,
+        "updated_at": heater_state.updated_at.isoformat() if heater_state.updated_at else None,
     }
 
 
@@ -860,6 +876,41 @@ async def get_node_environment(node_id: str, db: Session = Depends(get_db_sessio
         raise HTTPException(status_code=404, detail="No environment telemetry for node")
 
     return environment_to_dict(environment)
+
+
+@app.get("/api/nodes/{node_id}/heater")
+async def get_node_heater_state(node_id: str, db: Session = Depends(get_db_session)):
+    heater_state = NodeHeaterStateRepository(db).get_or_create(node_id)
+    return heater_state_to_dict(heater_state)
+
+
+@app.put("/api/nodes/{node_id}/heater")
+async def update_node_heater_state(
+    node_id: str,
+    request: NodeHeaterStateUpdate,
+    db: Session = Depends(get_db_session),
+):
+    repo = NodeHeaterStateRepository(db)
+    heater_state = repo.set_desired(node_id, request.enabled)
+    message = {
+        "type": "heater.set",
+        "enabled": heater_state.desired_enabled,
+    }
+    sent = await connections.send_to_node(node_id, message)
+    payload = heater_state_to_dict(heater_state)
+    await connections.broadcast_dashboard(
+        {
+            "type": "heater.updated",
+            "node_id": node_id,
+            "heater": payload,
+            "node_notified": sent,
+        }
+    )
+
+    return {
+        "heater": payload,
+        "node_notified": sent,
+    }
 
 
 @app.post("/api/nodes/{node_id}/sequence/start")
@@ -1211,7 +1262,14 @@ async def node_websocket(websocket: WebSocket, node_id: str):
             if message_type == "node.hello":
                 settings_repo = NodeCameraSettingsRepository(db)
                 camera_settings = settings_repo.get_or_create(node_id)
+                heater_state = NodeHeaterStateRepository(db).get_or_create(node_id)
                 await websocket.send_json(config_update_message(camera_settings))
+                await websocket.send_json(
+                    {
+                        "type": "heater.set",
+                        "enabled": heater_state.desired_enabled,
+                    }
+                )
                 await connections.broadcast_dashboard(
                     {
                         "type": "node.updated",
@@ -1244,6 +1302,21 @@ async def node_websocket(websocket: WebSocket, node_id: str):
                         "type": "environment.updated",
                         "node_id": node_id,
                         "telemetry": environment_to_dict(environment),
+                    }
+                )
+
+            elif message_type == "heater.state":
+                heater_state = NodeHeaterStateRepository(db).update_actual(
+                    node_id=node_id,
+                    enabled=bool(message.get("enabled", False)),
+                    driver=message.get("driver"),
+                    gpio_pin=message.get("gpio_pin"),
+                )
+                await connections.broadcast_dashboard(
+                    {
+                        "type": "heater.updated",
+                        "node_id": node_id,
+                        "heater": heater_state_to_dict(heater_state),
                     }
                 )
 
