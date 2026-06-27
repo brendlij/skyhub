@@ -23,6 +23,7 @@ const latest = ref(null);
 const latestImageUrl = ref(null);
 const captures = ref([]);
 const overlaySettings = ref(null);
+const deviceSettings = ref(null);
 const environmentTelemetry = ref(null);
 const heaterState = ref(null);
 const storageStats = ref(null);
@@ -56,6 +57,33 @@ function settingsFromApi(data) {
     night_gain: data.night.gain,
     capture_enabled: data.capture_enabled,
     current_sequence_id: data.current_sequence_id
+  };
+}
+
+function deviceSettingsFromApi(data) {
+  return {
+    ...data,
+    devices: {
+      environment: {
+        driver: "bme280",
+        interval_seconds: 30,
+        bme280_i2c_bus: 1,
+        bme280_i2c_address: "0x77",
+        ...(data.devices?.environment || {})
+      },
+      heater: {
+        driver: "gpiozero",
+        gpio_pin: 23,
+        active_high: true,
+        mode: "manual",
+        pwm: {
+          enabled: false,
+          duty_cycle: 1.0,
+          ...(data.devices?.heater?.pwm || {})
+        },
+        ...(data.devices?.heater || {})
+      }
+    }
   };
 }
 
@@ -93,6 +121,17 @@ async function loadOverlays() {
   }
 
   overlaySettings.value = await requestJson(`/api/nodes/${selectedNodeId.value}/overlays`);
+}
+
+async function loadDeviceSettings() {
+  if (!selectedNodeId.value) {
+    deviceSettings.value = null;
+    return;
+  }
+
+  deviceSettings.value = deviceSettingsFromApi(
+    await requestJson(`/api/nodes/${selectedNodeId.value}/devices`)
+  );
 }
 
 async function loadEnvironmentTelemetry() {
@@ -162,6 +201,7 @@ async function refreshDashboard() {
     await Promise.all([
       loadSettings(),
       loadOverlays(),
+      loadDeviceSettings(),
       loadEnvironmentTelemetry(),
       loadHeaterState(),
       loadLatest(),
@@ -175,7 +215,7 @@ async function refreshDashboard() {
 
 async function selectNode(nodeId) {
   selectedNodeId.value = nodeId;
-  await Promise.all([loadSettings(), loadOverlays(), loadEnvironmentTelemetry(), loadHeaterState(), loadLatest(), loadCaptures()]);
+  await Promise.all([loadSettings(), loadOverlays(), loadDeviceSettings(), loadEnvironmentTelemetry(), loadHeaterState(), loadLatest(), loadCaptures()]);
 }
 
 async function deleteNode(nodeId) {
@@ -224,6 +264,21 @@ async function saveOverlays() {
     })
   });
   setMessage("Overlay settings saved");
+}
+
+async function saveDeviceSettings() {
+  if (!selectedNodeId.value || !deviceSettings.value) return;
+
+  const result = await requestJson(`/api/nodes/${selectedNodeId.value}/devices`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      devices: deviceSettings.value.devices
+    })
+  });
+
+  deviceSettings.value = deviceSettingsFromApi(result.device_settings);
+  setMessage(result.node_notified ? "Device settings saved and sent to node" : "Device settings saved");
 }
 
 async function startCapture() {
@@ -307,6 +362,16 @@ function handleDashboardEvent(event) {
     return;
   }
 
+  if (event.type === "device.settings.updated" && event.node_id === selectedNodeId.value) {
+    deviceSettings.value = deviceSettingsFromApi(event.device_settings);
+    return;
+  }
+
+  if (event.type === "device.configured" && event.node_id === selectedNodeId.value) {
+    if (event.heater) heaterState.value = event.heater;
+    return;
+  }
+
   if (event.type === "capture.state.updated" && event.node_id === selectedNodeId.value) {
     loadSettings().catch(() => {});
     return;
@@ -373,6 +438,7 @@ export function useSkyHub() {
     latestImageUrl,
     captures,
     overlaySettings,
+    deviceSettings,
     environmentTelemetry,
     heaterState,
     storageStats,
@@ -381,12 +447,14 @@ export function useSkyHub() {
     captureUrl,
     deleteNode,
     loadCaptures,
+    loadDeviceSettings,
     loadEnvironmentTelemetry,
     loadHeaterState,
     loadOverlays,
     loadStorageStats,
     refreshDashboard,
     saveSettings,
+    saveDeviceSettings,
     saveOverlays,
     selectNode,
     setHeaterEnabled,

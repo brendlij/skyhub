@@ -24,6 +24,7 @@ node_settings = get_settings()
 camera: CameraDevice = create_camera(node_settings.camera_driver)
 environment_sensor: EnvironmentSensor | None = None
 heater: HeaterController | None = None
+active_device_config: dict[str, Any] = {}
 active_capture_settings: dict[str, Any] = {
     "interval_seconds": 60,
     "width": 1920,
@@ -40,17 +41,60 @@ active_sequence_task: asyncio.Task | None = None
 active_sequence_id: str | None = None
 
 
+def effective_node_settings():
+    environment = active_device_config.get("environment", {})
+    heater_config = active_device_config.get("heater", {})
+    updates = {}
+
+    if environment:
+        if "driver" in environment:
+            updates["environment_sensor_driver"] = environment["driver"]
+        if "interval_seconds" in environment:
+            updates["environment_interval_seconds"] = environment["interval_seconds"]
+        if "bme280_i2c_bus" in environment:
+            updates["bme280_i2c_bus"] = environment["bme280_i2c_bus"]
+        if "bme280_i2c_address" in environment:
+            updates["bme280_i2c_address"] = environment["bme280_i2c_address"]
+
+    if heater_config:
+        if "driver" in heater_config:
+            updates["heater_driver"] = heater_config["driver"]
+        if "gpio_pin" in heater_config:
+            updates["heater_gpio_pin"] = heater_config["gpio_pin"]
+        if "active_high" in heater_config:
+            updates["heater_active_high"] = heater_config["active_high"]
+
+    return node_settings.model_copy(update=updates)
+
+
 def initialize_heater() -> HeaterController | None:
+    settings = effective_node_settings()
+
     try:
-        return create_heater_controller(node_settings)
+        return create_heater_controller(settings)
     except Exception as error:
         logger.warning(
             "heater.initialization.failed",
-            driver=node_settings.heater_driver,
-            gpio_pin=node_settings.heater_gpio_pin,
+            driver=settings.heater_driver,
+            gpio_pin=settings.heater_gpio_pin,
             error=str(error),
         )
         return None
+
+
+def reinitialize_heater() -> None:
+    global heater
+
+    if heater is not None:
+        heater.close()
+
+    heater = initialize_heater()
+
+
+def reinitialize_environment_sensor() -> None:
+    global environment_sensor
+
+    environment_sensor = None
 
 
 async def send_json(websocket, message: dict[str, Any]):
@@ -96,6 +140,7 @@ async def send_hello(websocket):
     if heater is None:
         heater = initialize_heater()
 
+    settings = effective_node_settings()
     camera_info = camera.get_info()
     heater_state = heater.get_state() if heater else None
     message = {
@@ -110,16 +155,16 @@ async def send_hello(websocket):
             "supports_gain": camera_info.supports_gain,
             "supported_formats": camera_info.supported_formats,
             "supports_jpg": "jpg" in camera_info.supported_formats,
-            "environment_sensor": node_settings.environment_sensor_driver,
-            "environment_interval_seconds": node_settings.environment_interval_seconds,
+            "environment_sensor": settings.environment_sensor_driver,
+            "environment_interval_seconds": settings.environment_interval_seconds,
             "heater": heater_state.driver if heater_state else "disabled",
             "heater_gpio_pin": heater_state.gpio_pin if heater_state else None,
         },
     }
 
-    if node_settings.environment_sensor_driver.lower() == "bme280":
-        message["capabilities"]["bme280_i2c_bus"] = node_settings.bme280_i2c_bus
-        message["capabilities"]["bme280_i2c_address"] = hex(node_settings.bme280_i2c_address_int)
+    if settings.environment_sensor_driver.lower() == "bme280":
+        message["capabilities"]["bme280_i2c_bus"] = settings.bme280_i2c_bus
+        message["capabilities"]["bme280_i2c_address"] = hex(settings.bme280_i2c_address_int)
 
     await send_json(websocket, message)
     logger.info("node.hello.sent", node_id=node_settings.node_id)
@@ -163,14 +208,23 @@ async def heartbeat_loop(websocket):
 async def environment_loop(websocket):
     global environment_sensor
 
-    if node_settings.environment_sensor_driver.lower() in {"none", "disabled", "off"}:
+    settings = effective_node_settings()
+
+    if settings.environment_sensor_driver.lower() in {"none", "disabled", "off"}:
         logger.info("environment.disabled")
         return
 
     while True:
         try:
+            settings = effective_node_settings()
+
+            if settings.environment_sensor_driver.lower() in {"none", "disabled", "off"}:
+                environment_sensor = None
+                await asyncio.sleep(max(1, settings.environment_interval_seconds))
+                continue
+
             if environment_sensor is None:
-                environment_sensor = create_environment_sensor(node_settings)
+                environment_sensor = create_environment_sensor(settings)
 
             if environment_sensor is None:
                 return
@@ -201,12 +255,12 @@ async def environment_loop(websocket):
         except Exception as error:
             logger.warning(
                 "environment.read.failed",
-                driver=node_settings.environment_sensor_driver,
+                driver=settings.environment_sensor_driver,
                 error=str(error),
             )
             environment_sensor = None
 
-        await asyncio.sleep(max(1, node_settings.environment_interval_seconds))
+        await asyncio.sleep(max(1, settings.environment_interval_seconds))
 
 
 async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: dict[str, Any]):
@@ -443,7 +497,7 @@ async def stop_sequence(
 
 
 async def receive_loop(websocket):
-    global heater
+    global active_device_config, heater
 
     async for raw_message in websocket:
         message = json.loads(raw_message)
@@ -483,6 +537,21 @@ async def receive_loop(websocket):
 
         elif message_type == "config.update":
             await apply_config_update(websocket=websocket, message=message)
+
+        elif message_type == "device.config":
+            active_device_config = (message.get("settings", {}) or {}).get("devices", {}) or {}
+            reinitialize_environment_sensor()
+            reinitialize_heater()
+            logger.info("device.config.updated", devices=active_device_config)
+            await send_json(
+                websocket,
+                {
+                    "type": "device.configured",
+                    "node_id": node_settings.node_id,
+                    "devices": active_device_config,
+                    "heater": heater_state_payload(heater.get_state() if heater else None),
+                },
+            )
 
         elif message_type == "heater.set":
             requested_enabled = bool(message.get("enabled", False))

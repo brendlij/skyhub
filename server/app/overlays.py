@@ -1,8 +1,12 @@
 from datetime import datetime
 from pathlib import Path
+import re
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
+
+
+VARIABLE_PATTERN = re.compile(r"\$[A-Za-z][A-Za-z0-9_.]*")
 
 
 def hex_to_rgb(value: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -30,26 +34,95 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def format_value(value) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, bool):
+        return "on" if value else "off"
+
+    if isinstance(value, float):
+        return f"{value:.1f}".rstrip("0").rstrip(".")
+
+    return str(value)
+
+
+def variable_values(context: dict) -> dict[str, object]:
+    captured_at = context["captured_at"]
+    environment = context.get("environment")
+    heater = context.get("heater")
+    camera_settings = context.get("camera_settings")
+
+    values = {
+        "$capture.datetime": captured_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "$capture.date": captured_at.strftime("%Y-%m-%d"),
+        "$capture.time": captured_at.strftime("%H:%M:%S"),
+        "$capture.period": str(context.get("period", "")).upper(),
+        "$node.id": context.get("node_id", ""),
+        "$node.node_id": context.get("node_id", ""),
+        "$picamera2.state": "capturing" if getattr(camera_settings, "capture_enabled", False) else "idle",
+    }
+
+    if environment is not None:
+        values.update(
+            {
+                "$bme280.temperature": environment.temperature_c,
+                "$bme280.temperature_c": environment.temperature_c,
+                "$bme280.humidity": environment.humidity_percent,
+                "$bme280.humidity_percent": environment.humidity_percent,
+                "$bme280.pressure": environment.pressure_hpa,
+                "$bme280.pressure_hpa": environment.pressure_hpa,
+                "$bme280.dew_point": environment.dew_point_c,
+                "$bme280.dew_point_c": environment.dew_point_c,
+            }
+        )
+
+    if heater is not None:
+        values.update(
+            {
+                "$heater.desired": heater.desired_enabled,
+                "$heater.actual": heater.actual_enabled,
+                "$heater.state": heater.actual_enabled,
+                "$heater.gpio": heater.gpio_pin,
+                "$heater.driver": heater.driver,
+            }
+        )
+
+    return values
+
+
+def render_template(template: str, context: dict) -> str:
+    values = variable_values(context)
+
+    def replace(match: re.Match) -> str:
+        return format_value(values.get(match.group(0)))
+
+    return VARIABLE_PATTERN.sub(replace, template)
+
+
 def entity_text(entity: dict, context: dict) -> str:
+    if entity.get("text"):
+        return render_template(str(entity.get("text") or ""), context)
+
     entity_type = entity.get("type")
 
     if entity_type == "datetime":
-        return context["captured_at"].strftime("%Y-%m-%d %H:%M:%S")
+        return render_template("$capture.datetime", context)
 
     if entity_type == "date":
-        return context["captured_at"].strftime("%Y-%m-%d")
+        return render_template("$capture.date", context)
 
     if entity_type == "time":
-        return context["captured_at"].strftime("%H:%M:%S")
+        return render_template("$capture.time", context)
 
     if entity_type == "period":
-        return str(context.get("period", "")).upper()
+        return render_template("$capture.period", context)
 
     if entity_type == "node_id":
-        return str(context.get("node_id", ""))
+        return render_template("$node.id", context)
 
     if entity_type == "text":
-        return str(entity.get("text") or entity.get("label") or "")
+        return str(entity.get("label") or "")
 
     return ""
 
@@ -87,6 +160,9 @@ def apply_overlays_to_image(
     captured_at: datetime,
     period: str,
     timezone_name: str,
+    environment=None,
+    heater=None,
+    camera_settings=None,
 ) -> None:
     if not overlay_settings or not overlay_settings.enabled:
         return
@@ -106,6 +182,9 @@ def apply_overlays_to_image(
             "node_id": node_id,
             "captured_at": local_captured_at,
             "period": period,
+            "environment": environment,
+            "heater": heater,
+            "camera_settings": camera_settings,
         }
 
         for entity in entities:

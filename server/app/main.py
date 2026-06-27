@@ -20,6 +20,7 @@ from app.db.database import SessionLocal, create_db_tables, get_db_session
 from app.config import get_settings
 from app.repositories.node_repository import NodeRepository
 from app.repositories.node_camera_settings_repository import NodeCameraSettingsRepository
+from app.repositories.node_device_settings_repository import NodeDeviceSettingsRepository
 from app.repositories.node_environment_repository import NodeEnvironmentRepository
 from app.repositories.node_heater_state_repository import NodeHeaterStateRepository
 from app.repositories.node_overlay_settings_repository import NodeOverlaySettingsRepository
@@ -527,7 +528,7 @@ class NodeCameraSettingsUpdate(BaseModel):
 
 class OverlayEntity(BaseModel):
     id: str
-    type: str
+    type: str = "text"
     label: str | None = None
     enabled: bool = True
     x: float = 0
@@ -547,6 +548,10 @@ class NodeOverlaySettingsUpdate(BaseModel):
 
 class NodeHeaterStateUpdate(BaseModel):
     enabled: bool
+
+
+class NodeDeviceSettingsUpdate(BaseModel):
+    devices: dict
 
 
 def safe_path_part(value: str) -> str:
@@ -687,6 +692,14 @@ def heater_state_to_dict(heater_state) -> dict:
     }
 
 
+def device_settings_to_dict(device_settings) -> dict:
+    return {
+        "node_id": device_settings.node_id,
+        "devices": device_settings.devices or {},
+        "updated_at": device_settings.updated_at.isoformat() if device_settings.updated_at else None,
+    }
+
+
 def current_period() -> str:
     return archive_period(datetime.now(timezone.utc))[1]
 
@@ -744,6 +757,13 @@ def config_update_message(camera_settings) -> dict:
         "active_settings": capture_settings_for_period(camera_settings, period),
         "capture_enabled": camera_settings.capture_enabled,
         "sequence_id": camera_settings.current_sequence_id,
+    }
+
+
+def device_config_message(device_settings) -> dict:
+    return {
+        "type": "device.config",
+        "settings": device_settings_to_dict(device_settings),
     }
 
 
@@ -876,6 +896,48 @@ async def get_node_environment(node_id: str, db: Session = Depends(get_db_sessio
         raise HTTPException(status_code=404, detail="No environment telemetry for node")
 
     return environment_to_dict(environment)
+
+
+@app.get("/api/nodes/{node_id}/devices")
+async def get_node_device_settings(node_id: str, db: Session = Depends(get_db_session)):
+    device_settings = NodeDeviceSettingsRepository(db).get_or_create(node_id)
+    return device_settings_to_dict(device_settings)
+
+
+@app.put("/api/nodes/{node_id}/devices")
+async def update_node_device_settings(
+    node_id: str,
+    request: NodeDeviceSettingsUpdate,
+    db: Session = Depends(get_db_session),
+):
+    repo = NodeDeviceSettingsRepository(db)
+    device_settings = repo.update(node_id, request.devices)
+    payload = device_settings_to_dict(device_settings)
+    sent = await connections.send_to_node(node_id, device_config_message(device_settings))
+    heater_state = NodeHeaterStateRepository(db).get_or_create(node_id)
+
+    if sent:
+        await connections.send_to_node(
+            node_id,
+            {
+                "type": "heater.set",
+                "enabled": heater_state.desired_enabled,
+            },
+        )
+
+    await connections.broadcast_dashboard(
+        {
+            "type": "device.settings.updated",
+            "node_id": node_id,
+            "device_settings": payload,
+            "node_notified": sent,
+        }
+    )
+
+    return {
+        "device_settings": payload,
+        "node_notified": sent,
+    }
 
 
 @app.get("/api/nodes/{node_id}/heater")
@@ -1158,6 +1220,9 @@ async def upload_capture(
     shutil.copy2(output_path, original_path)
 
     overlay_settings = NodeOverlaySettingsRepository(db).get_or_create(upload_node_id)
+    environment = NodeEnvironmentRepository(db).get(upload_node_id)
+    heater_state = NodeHeaterStateRepository(db).get(upload_node_id)
+    camera_settings = NodeCameraSettingsRepository(db).get_or_create(upload_node_id)
     apply_overlays_to_image(
         output_path,
         overlay_settings,
@@ -1165,6 +1230,9 @@ async def upload_capture(
         captured_at=captured_at,
         period=period,
         timezone_name=settings.timezone,
+        environment=environment,
+        heater=heater_state,
+        camera_settings=camera_settings,
     )
     create_thumbnail(output_path, thumbnail_path)
 
@@ -1262,8 +1330,10 @@ async def node_websocket(websocket: WebSocket, node_id: str):
             if message_type == "node.hello":
                 settings_repo = NodeCameraSettingsRepository(db)
                 camera_settings = settings_repo.get_or_create(node_id)
+                device_settings = NodeDeviceSettingsRepository(db).get_or_create(node_id)
                 heater_state = NodeHeaterStateRepository(db).get_or_create(node_id)
                 await websocket.send_json(config_update_message(camera_settings))
+                await websocket.send_json(device_config_message(device_settings))
                 await websocket.send_json(
                     {
                         "type": "heater.set",
@@ -1316,6 +1386,23 @@ async def node_websocket(websocket: WebSocket, node_id: str):
                     {
                         "type": "heater.updated",
                         "node_id": node_id,
+                        "heater": heater_state_to_dict(heater_state),
+                    }
+                )
+
+            elif message_type == "device.configured":
+                heater_payload = message.get("heater") or {}
+                heater_state = NodeHeaterStateRepository(db).update_actual(
+                    node_id=node_id,
+                    enabled=bool(heater_payload.get("enabled", False)),
+                    driver=heater_payload.get("driver"),
+                    gpio_pin=heater_payload.get("gpio_pin"),
+                )
+                await connections.broadcast_dashboard(
+                    {
+                        "type": "device.configured",
+                        "node_id": node_id,
+                        "devices": message.get("devices", {}),
                         "heater": heater_state_to_dict(heater_state),
                     }
                 )

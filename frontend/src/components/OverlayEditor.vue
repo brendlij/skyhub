@@ -14,6 +14,7 @@ const props = defineProps({
 
 const draggingEntity = ref(null);
 const dragOffset = ref({ x: 0, y: 0 });
+const selectedEntityId = ref(null);
 const stage = ref(null);
 const previewImage = ref(null);
 const previewRect = ref({
@@ -26,14 +27,55 @@ const previewRect = ref({
 let resizeObserver = null;
 
 const enabledEntities = computed(() => props.overlays.entities || []);
+const variables = [
+  { token: "$capture.datetime", label: "Date time" },
+  { token: "$capture.date", label: "Date" },
+  { token: "$capture.time", label: "Time" },
+  { token: "$capture.period", label: "Period" },
+  { token: "$node.id", label: "Node" },
+  { token: "$bme280.temperature", label: "Temp" },
+  { token: "$bme280.humidity", label: "Humidity" },
+  { token: "$bme280.pressure", label: "Pressure" },
+  { token: "$bme280.dew_point", label: "Dew point" },
+  { token: "$heater.state", label: "Heater" },
+  { token: "$picamera2.state", label: "Camera" }
+];
+
+const previewValues = {
+  "$capture.datetime": "2026-06-21 23:42:10",
+  "$capture.date": "2026-06-21",
+  "$capture.time": "23:42:10",
+  "$capture.period": "NIGHT",
+  "$node.id": "pi5-hqcam",
+  "$node.node_id": "pi5-hqcam",
+  "$bme280.temperature": "12.4",
+  "$bme280.temperature_c": "12.4",
+  "$bme280.humidity": "78",
+  "$bme280.humidity_percent": "78",
+  "$bme280.pressure": "1008",
+  "$bme280.pressure_hpa": "1008",
+  "$bme280.dew_point": "8.7",
+  "$bme280.dew_point_c": "8.7",
+  "$heater.state": "off",
+  "$heater.actual": "off",
+  "$heater.desired": "off",
+  "$heater.gpio": "23",
+  "$heater.driver": "gpiozero",
+  "$picamera2.state": "capturing"
+};
+
+function legacyTemplate(entity) {
+  if (entity.text) return entity.text;
+  if (entity.type === "datetime") return "$capture.datetime";
+  if (entity.type === "date") return "$capture.date";
+  if (entity.type === "time") return "$capture.time";
+  if (entity.type === "period") return "$capture.period";
+  if (entity.type === "node_id") return "$node.id";
+  return entity.label || "SkyHub";
+}
 
 function previewText(entity) {
-  if (entity.type === "datetime") return "2026-06-21 23:42:10";
-  if (entity.type === "date") return "2026-06-21";
-  if (entity.type === "time") return "23:42:10";
-  if (entity.type === "period") return "NIGHT";
-  if (entity.type === "node_id") return "pi5-hqcam";
-  return entity.text || entity.label || "Custom text";
+  return legacyTemplate(entity).replace(/\$[A-Za-z][A-Za-z0-9_.]*/g, (token) => previewValues[token] ?? "");
 }
 
 function entityStyle(entity) {
@@ -160,10 +202,10 @@ function stopDrag() {
 }
 
 function addTextEntity() {
-  props.overlays.entities.push({
+  const entity = {
     id: `text-${Date.now()}`,
     type: "text",
-    label: "Custom text",
+    label: "Overlay",
     enabled: true,
     x: 0.5,
     y: 0.5,
@@ -172,8 +214,11 @@ function addTextEntity() {
     color: "#ffffff",
     background: "#000000",
     background_opacity: 0.35,
-    text: "SkyHub"
-  });
+    text: "$capture.datetime"
+  };
+
+  props.overlays.entities.push(entity);
+  selectedEntityId.value = entity.id;
 }
 
 function removeEntity(entityId) {
@@ -182,9 +227,50 @@ function removeEntity(entityId) {
   if (index >= 0) {
     props.overlays.entities.splice(index, 1);
   }
+
+  if (selectedEntityId.value === entityId) {
+    selectedEntityId.value = props.overlays.entities[0]?.id || null;
+  }
+}
+
+function selectEntity(entity) {
+  selectedEntityId.value = entity.id;
+  entity.type = "text";
+  entity.text = legacyTemplate(entity);
+}
+
+function selectedEntity() {
+  return props.overlays.entities.find((entity) => entity.id === selectedEntityId.value) || props.overlays.entities[0];
+}
+
+function insertVariable(token) {
+  let entity = selectedEntity();
+
+  if (!entity) {
+    addTextEntity();
+    entity = selectedEntity();
+  }
+
+  if (!entity) return;
+
+  selectEntity(entity);
+  entity.text = [entity.text || "", token].filter(Boolean).join(" ");
+}
+
+function normalizeEntities() {
+  for (const entity of props.overlays.entities || []) {
+    entity.type = "text";
+    entity.text = legacyTemplate(entity);
+    entity.label = entity.label || "Overlay";
+  }
+
+  if (!selectedEntityId.value && props.overlays.entities?.length) {
+    selectedEntityId.value = props.overlays.entities[0].id;
+  }
 }
 
 onMounted(() => {
+  normalizeEntities();
   updatePreviewRect();
 
   if (stage.value && "ResizeObserver" in window) {
@@ -204,6 +290,8 @@ onBeforeUnmount(() => {
 watch(() => props.imageUrl, () => {
   requestAnimationFrame(updatePreviewRect);
 });
+
+watch(() => props.overlays.entities, normalizeEntities, { immediate: true });
 </script>
 
 <template>
@@ -213,7 +301,18 @@ watch(() => props.imageUrl, () => {
         <input v-model="overlays.enabled" type="checkbox" />
         Enable overlays on saved captures
       </label>
-      <button type="button" @click="addTextEntity">Add Text</button>
+      <button type="button" @click="addTextEntity">Add Overlay</button>
+    </div>
+
+    <div class="overlay-variables">
+      <button
+        v-for="variable in variables"
+        :key="variable.token"
+        type="button"
+        @click="insertVariable(variable.token)"
+      >
+        {{ variable.label }}
+      </button>
     </div>
 
     <div ref="stage" class="overlay-stage">
@@ -226,32 +325,32 @@ watch(() => props.imageUrl, () => {
         class="overlay-entity"
         type="button"
         :style="entityStyle(entity)"
-        @pointerdown.prevent="startDrag(entity, $event)"
+        @pointerdown.prevent="selectEntity(entity); startDrag(entity, $event)"
       >
         {{ previewText(entity) }}
       </button>
     </div>
 
     <div class="overlay-list">
-      <section v-for="entity in overlays.entities" :key="entity.id" class="overlay-row">
+      <section
+        v-for="entity in overlays.entities"
+        :key="entity.id"
+        class="overlay-row"
+        :class="{ active: entity.id === selectedEntityId }"
+        @focusin="selectEntity(entity)"
+        @click="selectEntity(entity)"
+      >
         <div class="overlay-row-head">
           <label class="check">
             <input v-model="entity.enabled" type="checkbox" />
             {{ entity.label || entity.type }}
           </label>
-          <button v-if="entity.type === 'text'" type="button" @click="removeEntity(entity.id)">Remove</button>
+          <button type="button" @click="removeEntity(entity.id)">Remove</button>
         </div>
         <div class="overlay-grid">
           <label>
-            Type
-            <select v-model="entity.type">
-              <option value="datetime">Date + time</option>
-              <option value="date">Date</option>
-              <option value="time">Time</option>
-              <option value="period">Period</option>
-              <option value="node_id">Node ID</option>
-              <option value="text">Custom text</option>
-            </select>
+            Name
+            <input v-model="entity.label" @focus="selectEntity(entity)" />
           </label>
           <label>
             Anchor
@@ -263,9 +362,14 @@ watch(() => props.imageUrl, () => {
               <option value="center">Center</option>
             </select>
           </label>
-          <label v-if="entity.type === 'text'">
-            Text
-            <input v-model="entity.text" />
+          <label class="overlay-template">
+            Template
+            <textarea
+              v-model="entity.text"
+              rows="2"
+              placeholder="$capture.datetime  $bme280.temperature C"
+              @focus="selectEntity(entity)"
+            />
           </label>
           <label>
             Size

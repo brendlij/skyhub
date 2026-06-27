@@ -20,7 +20,7 @@ class NodeSettings(BaseSettings):
     environment_interval_seconds: int = 30
     bme280_i2c_bus: int = 1
     bme280_i2c_address: str = "0x77"
-    heater_driver: str = "mock"
+    heater_driver: str = "gpiozero"
     heater_gpio_pin: int = 23
     heater_active_high: bool = True
 

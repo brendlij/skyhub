@@ -3,8 +3,10 @@ import { formatBytes } from "../api/skyhub";
 import { useSkyHub } from "../composables/useSkyHub";
 
 const {
+  deviceSettings,
   heaterState,
   message,
+  saveDeviceSettings,
   saveSettings,
   setHeaterEnabled,
   settings,
@@ -91,6 +93,71 @@ const {
             Save Node Settings
           </button>
           <div class="message">{{ message }}</div>
+        </div>
+        <div class="content muted" v-else>No node selected</div>
+      </section>
+
+      <section class="panel">
+        <h2>Device Hardware</h2>
+        <div class="content" v-if="deviceSettings">
+          <div class="settings-section">
+            <h3>Heater</h3>
+            <div class="settings-grid">
+              <label>
+                Driver
+                <select v-model="deviceSettings.devices.heater.driver">
+                  <option value="gpiozero">gpiozero</option>
+                  <option value="mock">mock</option>
+                  <option value="disabled">disabled</option>
+                </select>
+              </label>
+              <label>
+                GPIO pin
+                <input v-model.number="deviceSettings.devices.heater.gpio_pin" type="number" min="0" />
+              </label>
+              <label class="check">
+                <input v-model="deviceSettings.devices.heater.active_high" type="checkbox" />
+                Active high
+              </label>
+              <label>
+                Mode
+                <select v-model="deviceSettings.devices.heater.mode">
+                  <option value="manual">manual</option>
+                  <option value="auto" disabled>auto later</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Environment Sensor</h3>
+            <div class="settings-grid">
+              <label>
+                Driver
+                <select v-model="deviceSettings.devices.environment.driver">
+                  <option value="bme280">bme280</option>
+                  <option value="mock">mock</option>
+                  <option value="disabled">disabled</option>
+                </select>
+              </label>
+              <label>
+                Interval seconds
+                <input v-model.number="deviceSettings.devices.environment.interval_seconds" type="number" min="1" />
+              </label>
+              <label>
+                I2C bus
+                <input v-model.number="deviceSettings.devices.environment.bme280_i2c_bus" type="number" min="0" />
+              </label>
+              <label>
+                I2C address
+                <input v-model="deviceSettings.devices.environment.bme280_i2c_address" />
+              </label>
+            </div>
+          </div>
+
+          <button type="button" class="primary save" @click="saveDeviceSettings">
+            Save Device Hardware
+          </button>
         </div>
         <div class="content muted" v-else>No node selected</div>
       </section>
