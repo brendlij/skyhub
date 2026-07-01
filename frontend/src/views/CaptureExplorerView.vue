@@ -1,32 +1,21 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import CaptureGrid from "../components/CaptureGrid.vue";
-import CaptureTable from "../components/CaptureTable.vue";
 import Lightbox from "../components/Lightbox.vue";
 import { useSkyHub } from "../composables/useSkyHub";
 
 const { captures, loadCaptures } = useSkyHub();
 const selectedCapture = ref(null);
-const viewMode = ref("grid");
-const sortKey = ref("modified_at");
-const sortDirection = ref("desc");
+const selectedDate = ref(null);
+const selectedPeriod = ref("night");
 
 const sortedCaptures = computed(() => {
-  const direction = sortDirection.value === "asc" ? 1 : -1;
-
   return [...captures.value].sort((a, b) => {
-    const aValue = a[sortKey.value] ?? "";
-    const bValue = b[sortKey.value] ?? "";
-
-    if (sortKey.value === "size_bytes") {
-      return ((Number(aValue) || 0) - (Number(bValue) || 0)) * direction;
-    }
-
-    return String(aValue).localeCompare(String(bValue)) * direction;
+    return String(b.modified_at || "").localeCompare(String(a.modified_at || ""));
   });
 });
 
-const groupedCaptures = computed(() => {
+const dateGroups = computed(() => {
   const groups = new Map();
 
   for (const capture of sortedCaptures.value) {
@@ -43,16 +32,42 @@ const groupedCaptures = computed(() => {
   return [...groups.values()].sort((a, b) => b.archive_date.localeCompare(a.archive_date));
 });
 
+const selectedGroup = computed(() => (
+  dateGroups.value.find((group) => group.archive_date === selectedDate.value) || null
+));
+
+const visibleCaptures = computed(() => {
+  if (!selectedGroup.value) return [];
+
+  return selectedGroup.value[selectedPeriod.value] || [];
+});
+
+const availablePeriodCounts = computed(() => ({
+  night: selectedGroup.value?.night.length || 0,
+  day: selectedGroup.value?.day.length || 0
+}));
+
 const selectedCaptureIndex = computed(() => {
   if (!selectedCapture.value) return -1;
 
-  return sortedCaptures.value.findIndex((capture) => capture.path === selectedCapture.value.path);
+  return visibleCaptures.value.findIndex((capture) => capture.path === selectedCapture.value.path);
 });
 
 const hasPreviousCapture = computed(() => selectedCaptureIndex.value > 0);
 const hasNextCapture = computed(() => (
-  selectedCaptureIndex.value >= 0 && selectedCaptureIndex.value < sortedCaptures.value.length - 1
+  selectedCaptureIndex.value >= 0 && selectedCaptureIndex.value < visibleCaptures.value.length - 1
 ));
+
+function formatArchiveDate(archiveDate) {
+  const date = new Date(`${archiveDate}T12:00:00`);
+
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  }).format(date);
+}
 
 function openCapture(capture) {
   selectedCapture.value = capture;
@@ -61,26 +76,49 @@ function openCapture(capture) {
 function previousCapture() {
   if (!hasPreviousCapture.value) return;
 
-  selectedCapture.value = sortedCaptures.value[selectedCaptureIndex.value - 1];
+  selectedCapture.value = visibleCaptures.value[selectedCaptureIndex.value - 1];
 }
 
 function nextCapture() {
   if (!hasNextCapture.value) return;
 
-  selectedCapture.value = sortedCaptures.value[selectedCaptureIndex.value + 1];
+  selectedCapture.value = visibleCaptures.value[selectedCaptureIndex.value + 1];
 }
 
-function setSort(nextSortKey) {
-  if (sortKey.value === nextSortKey) {
-    sortDirection.value = sortDirection.value === "asc" ? "desc" : "asc";
+function chooseDate(archiveDate) {
+  selectedDate.value = archiveDate;
+  selectedCapture.value = null;
+}
+
+function choosePeriod(period) {
+  selectedPeriod.value = period;
+  selectedCapture.value = null;
+}
+
+function refreshCaptures() {
+  return loadCaptures(500);
+}
+
+watch(dateGroups, (groups) => {
+  if (!groups.length) {
+    selectedDate.value = null;
     return;
   }
 
-  sortKey.value = nextSortKey;
-  sortDirection.value = "desc";
-}
+  if (!selectedDate.value || !groups.some((group) => group.archive_date === selectedDate.value)) {
+    selectedDate.value = groups[0].archive_date;
+  }
+}, { immediate: true });
 
-loadCaptures().catch(() => {});
+watch(selectedGroup, (group) => {
+  if (!group) return;
+
+  if (!(group[selectedPeriod.value] || []).length) {
+    selectedPeriod.value = group.night.length ? "night" : "day";
+  }
+}, { immediate: true });
+
+refreshCaptures().catch(() => {});
 </script>
 
 <template>
@@ -90,51 +128,58 @@ loadCaptures().catch(() => {});
         <h1>Captures</h1>
       </div>
       <div class="page-actions">
-        <div class="segmented">
-          <button type="button" :class="{ active: viewMode === 'grid' }" @click="viewMode = 'grid'">
-            Grid
-          </button>
-          <button type="button" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
-            Table
-          </button>
-        </div>
-        <button type="button" @click="loadCaptures">Refresh</button>
+        <button type="button" @click="refreshCaptures">Refresh</button>
       </div>
     </section>
 
-    <div v-if="viewMode === 'table' && captures.length" class="panel">
-      <div class="table-tools">
-        <span class="muted">{{ captures.length }} captures</span>
-        <div class="actions compact">
-          <button type="button" @click="setSort('modified_at')">
-            Time {{ sortKey === "modified_at" ? sortDirection : "" }}
-          </button>
-          <button type="button" @click="setSort('period')">
-            Period {{ sortKey === "period" ? sortDirection : "" }}
-          </button>
-          <button type="button" @click="setSort('size_bytes')">
-            Size {{ sortKey === "size_bytes" ? sortDirection : "" }}
+    <section v-if="dateGroups.length" class="capture-browser">
+      <aside class="panel capture-date-panel">
+        <h2>Dates</h2>
+        <div class="capture-date-list">
+          <button
+            v-for="group in dateGroups"
+            :key="group.archive_date"
+            type="button"
+            class="capture-date"
+            :class="{ active: selectedDate === group.archive_date }"
+            @click="chooseDate(group.archive_date)"
+          >
+            <strong>{{ formatArchiveDate(group.archive_date) }}</strong>
+            <span>{{ group.archive_date }}</span>
+            <small>{{ group.night.length }} night / {{ group.day.length }} day</small>
           </button>
         </div>
-      </div>
-      <CaptureTable :captures="sortedCaptures" @select="openCapture" />
-    </div>
+      </aside>
 
-    <div v-else-if="groupedCaptures.length" class="day-stack">
-      <section v-for="group in groupedCaptures" :key="group.archive_date" class="panel">
-        <h2>{{ group.archive_date }}</h2>
+      <section class="panel capture-period-panel">
+        <h2>{{ selectedDate ? formatArchiveDate(selectedDate) : "Captures" }}</h2>
         <div class="content period-stack">
-          <section v-if="group.night.length">
-            <h3>Night</h3>
-            <CaptureGrid :captures="group.night" @select="openCapture" />
-          </section>
-          <section v-if="group.day.length">
-            <h3>Day</h3>
-            <CaptureGrid :captures="group.day" @select="openCapture" />
-          </section>
+          <div class="capture-period-toolbar">
+            <div class="segmented">
+              <button
+                type="button"
+                :class="{ active: selectedPeriod === 'night' }"
+                :disabled="!availablePeriodCounts.night"
+                @click="choosePeriod('night')"
+              >
+                Night {{ availablePeriodCounts.night }}
+              </button>
+              <button
+                type="button"
+                :class="{ active: selectedPeriod === 'day' }"
+                :disabled="!availablePeriodCounts.day"
+                @click="choosePeriod('day')"
+              >
+                Day {{ availablePeriodCounts.day }}
+              </button>
+            </div>
+            <span class="muted">{{ visibleCaptures.length }} pictures</span>
+          </div>
+
+          <CaptureGrid :captures="visibleCaptures" @select="openCapture" />
         </div>
       </section>
-    </div>
+    </section>
     <section v-else class="panel">
       <div class="content muted">No captures</div>
     </section>

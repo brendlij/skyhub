@@ -323,6 +323,29 @@ async def capture_sequence_loop(websocket, sequence_id: str, capture_settings: d
                 capture_result=capture_result,
             )
 
+            if upload_result.get("status") == "skipped":
+                with suppress(FileNotFoundError):
+                    Path(capture_result.file_path).unlink()
+
+                logger.info(
+                    "capture.skipped",
+                    sequence_id=sequence_id,
+                    reason=upload_result.get("reason"),
+                    period=upload_result.get("period"),
+                )
+
+                await send_json(
+                    websocket,
+                    {
+                        "type": "capture.skipped",
+                        "node_id": node_settings.node_id,
+                        "sequence_id": sequence_id,
+                        "reason": upload_result.get("reason"),
+                        "period": upload_result.get("period"),
+                    },
+                )
+                continue
+
             logger.info(
                 "capture.uploaded",
                 sequence_id=sequence_id,

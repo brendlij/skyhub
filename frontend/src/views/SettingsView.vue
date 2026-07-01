@@ -8,9 +8,11 @@ const {
   message,
   saveDeviceSettings,
   saveSettings,
+  saveStorageSettings,
   setHeaterEnabled,
   settings,
-  storageStats
+  storageStats,
+  storageSettings
 } = useSkyHub();
 </script>
 
@@ -195,12 +197,48 @@ const {
       </section>
 
       <section class="panel">
-        <h2>Storage</h2>
+        <h2>Storage Policy</h2>
+        <div class="content" v-if="storageSettings">
+          <div class="settings-grid">
+            <label class="check">
+              <input v-model="storageSettings.night_capture_enabled" type="checkbox" />
+              Save night captures
+            </label>
+            <label class="check">
+              <input v-model="storageSettings.day_capture_enabled" type="checkbox" />
+              Save day captures
+            </label>
+            <label>
+              Days to keep
+              <input v-model.number="storageSettings.retention_days" type="number" min="1" placeholder="Unlimited" />
+            </label>
+            <label>
+              Max capture storage GB
+              <input v-model.number="storageSettings.max_storage_gb" type="number" min="0.1" step="0.1" placeholder="Unlimited" />
+            </label>
+          </div>
+          <button type="button" class="primary save" @click="saveStorageSettings">
+            Save Storage Policy
+          </button>
+        </div>
+        <div class="content muted" v-else>Storage policy not loaded</div>
+      </section>
+
+      <section class="panel">
+        <h2>Storage Usage</h2>
         <div class="content server-placeholder">
           <div v-if="storageStats" class="storage-grid">
             <div>
+              <span>Capture storage</span>
+              <strong>{{ formatBytes(storageStats.capture_storage_bytes) }}</strong>
+            </div>
+            <div>
               <span>Captures</span>
               <strong>{{ formatBytes(storageStats.captures_bytes) }}</strong>
+            </div>
+            <div>
+              <span>Originals</span>
+              <strong>{{ formatBytes(storageStats.originals_bytes) }}</strong>
             </div>
             <div>
               <span>Database</span>

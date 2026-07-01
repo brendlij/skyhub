@@ -350,6 +350,51 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.capture-browser {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.capture-date-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.capture-date {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+}
+
+.capture-date.active {
+  border-color: #0969da;
+  background: #ddf4ff;
+}
+
+.capture-date strong {
+  font-size: 13px;
+}
+
+.capture-date span,
+.capture-date small {
+  overflow: hidden;
+  color: #687589;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-period-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .capture-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -799,7 +844,8 @@ label {
   }
 
   .monitor-layout,
-  .settings-layout {
+  .settings-layout,
+  .capture-browser {
     grid-template-columns: 1fr;
   }
 }
@@ -812,9 +858,9 @@ label {
   .main-nav,
   .top-actions,
   .capture-toolbar,
+  .capture-period-toolbar,
   .page-heading,
-  .page-actions,
-  .table-tools {
+  .page-actions {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -27,11 +27,13 @@ const deviceSettings = ref(null);
 const environmentTelemetry = ref(null);
 const heaterState = ref(null);
 const storageStats = ref(null);
+const storageSettings = ref(null);
 const message = ref("");
 const loading = ref(false);
 let initialized = false;
 let dashboardSocket = null;
 let reconnectTimer = null;
+let captureLimit = 96;
 
 const selectedNode = computed(() =>
   nodes.value.find((node) => node.node_id === selectedNodeId.value)
@@ -160,6 +162,10 @@ async function loadStorageStats() {
   storageStats.value = await requestJson("/api/storage");
 }
 
+async function loadStorageSettings() {
+  storageSettings.value = await requestJson("/api/storage/settings");
+}
+
 async function loadLatest() {
   if (!selectedNodeId.value) {
     latest.value = null;
@@ -189,6 +195,7 @@ async function loadLatest() {
 async function loadCaptures(limit = 96) {
   if (!selectedNodeId.value) return;
 
+  captureLimit = limit;
   const data = await requestJson(`/api/captures?node_id=${encodeURIComponent(selectedNodeId.value)}&limit=${limit}`);
   captures.value = data.captures;
 }
@@ -205,8 +212,9 @@ async function refreshDashboard() {
       loadEnvironmentTelemetry(),
       loadHeaterState(),
       loadLatest(),
-      loadCaptures(),
-      loadStorageStats()
+      loadCaptures(captureLimit),
+      loadStorageStats(),
+      loadStorageSettings()
     ]);
   } finally {
     loading.value = false;
@@ -215,7 +223,7 @@ async function refreshDashboard() {
 
 async function selectNode(nodeId) {
   selectedNodeId.value = nodeId;
-  await Promise.all([loadSettings(), loadOverlays(), loadDeviceSettings(), loadEnvironmentTelemetry(), loadHeaterState(), loadLatest(), loadCaptures()]);
+  await Promise.all([loadSettings(), loadOverlays(), loadDeviceSettings(), loadEnvironmentTelemetry(), loadHeaterState(), loadLatest(), loadCaptures(captureLimit)]);
 }
 
 async function deleteNode(nodeId) {
@@ -281,6 +289,25 @@ async function saveDeviceSettings() {
   setMessage(result.node_notified ? "Device settings saved and sent to node" : "Device settings saved");
 }
 
+async function saveStorageSettings() {
+  if (!storageSettings.value) return;
+
+  const result = await requestJson("/api/storage/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      day_capture_enabled: storageSettings.value.day_capture_enabled,
+      night_capture_enabled: storageSettings.value.night_capture_enabled,
+      retention_days: storageSettings.value.retention_days || null,
+      max_storage_gb: storageSettings.value.max_storage_gb || null
+    })
+  });
+
+  storageSettings.value = result.storage_settings;
+  await loadStorageStats();
+  setMessage("Storage policy saved");
+}
+
 async function startCapture() {
   if (!selectedNodeId.value) return;
 
@@ -331,7 +358,7 @@ async function applyCaptureUploaded(event) {
   const exists = captures.value.some((capture) => capture.path === event.capture.path);
 
   if (!exists) {
-    captures.value = [event.capture, ...captures.value].slice(0, 96);
+    captures.value = [event.capture, ...captures.value].slice(0, captureLimit);
   }
 
   const nextUrl = captureUrl(event.capture);
@@ -348,6 +375,12 @@ async function applyCaptureUploaded(event) {
 function handleDashboardEvent(event) {
   if (event.type === "capture.uploaded") {
     applyCaptureUploaded(event).catch(() => {});
+    loadStorageStats().catch(() => {});
+    return;
+  }
+
+  if (event.type === "storage.settings.updated") {
+    storageSettings.value = event.storage_settings;
     loadStorageStats().catch(() => {});
     return;
   }
@@ -442,6 +475,7 @@ export function useSkyHub() {
     environmentTelemetry,
     heaterState,
     storageStats,
+    storageSettings,
     message,
     loading,
     captureUrl,
@@ -451,11 +485,13 @@ export function useSkyHub() {
     loadEnvironmentTelemetry,
     loadHeaterState,
     loadOverlays,
+    loadStorageSettings,
     loadStorageStats,
     refreshDashboard,
     saveSettings,
     saveDeviceSettings,
     saveOverlays,
+    saveStorageSettings,
     selectNode,
     setHeaterEnabled,
     setMessage,

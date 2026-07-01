@@ -18,6 +18,7 @@ from PIL import Image
 
 from app.db.database import SessionLocal, create_db_tables, get_db_session
 from app.config import get_settings
+from app.repositories.capture_storage_settings_repository import CaptureStorageSettingsRepository
 from app.repositories.node_repository import NodeRepository
 from app.repositories.node_camera_settings_repository import NodeCameraSettingsRepository
 from app.repositories.node_device_settings_repository import NodeDeviceSettingsRepository
@@ -441,28 +442,78 @@ async def list_nodes(db: Session = Depends(get_db_session)):
     }
 
 
+class CaptureStorageSettingsUpdate(BaseModel):
+    day_capture_enabled: bool | None = None
+    night_capture_enabled: bool | None = None
+    retention_days: int | None = None
+    max_storage_gb: float | None = None
+
+
 @app.get("/api/storage")
 async def storage_stats():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(settings.data_dir)
     captures_bytes = directory_size(settings.captures_dir)
+    originals_bytes = directory_size(settings.originals_dir)
     thumbnails_bytes = directory_size(settings.thumbnails_dir)
     database_bytes = settings.database_path.stat().st_size if settings.database_path.exists() else 0
     data_bytes = directory_size(settings.data_dir)
+    capture_storage_bytes_value = captures_bytes + originals_bytes + thumbnails_bytes
 
     return {
         "data_dir": str(settings.data_dir),
         "captures_dir": str(settings.captures_dir),
+        "originals_dir": str(settings.originals_dir),
         "thumbnails_dir": str(settings.thumbnails_dir),
         "database_path": str(settings.database_path),
         "data_bytes": data_bytes,
         "captures_bytes": captures_bytes,
+        "originals_bytes": originals_bytes,
         "thumbnails_bytes": thumbnails_bytes,
+        "capture_storage_bytes": capture_storage_bytes_value,
         "database_bytes": database_bytes,
-        "other_data_bytes": max(0, data_bytes - captures_bytes - thumbnails_bytes - database_bytes),
+        "other_data_bytes": max(0, data_bytes - capture_storage_bytes_value - database_bytes),
         "disk_total_bytes": usage.total,
         "disk_used_bytes": usage.used,
         "disk_free_bytes": usage.free,
+    }
+
+
+@app.get("/api/storage/settings")
+async def get_capture_storage_settings(db: Session = Depends(get_db_session)):
+    storage_settings = CaptureStorageSettingsRepository(db).get_or_create()
+    return capture_storage_settings_to_dict(storage_settings)
+
+
+@app.put("/api/storage/settings")
+async def update_capture_storage_settings(
+    request: CaptureStorageSettingsUpdate,
+    db: Session = Depends(get_db_session),
+):
+    values = request.model_dump(exclude_unset=True)
+
+    for integer_field in ["retention_days"]:
+        if values.get(integer_field) is not None and values[integer_field] <= 0:
+            values[integer_field] = None
+
+    for float_field in ["max_storage_gb"]:
+        if values.get(float_field) is not None and values[float_field] <= 0:
+            values[float_field] = None
+
+    storage_settings = CaptureStorageSettingsRepository(db).update(values)
+    cleanup_result = enforce_capture_retention(storage_settings)
+
+    await connections.broadcast_dashboard(
+        {
+            "type": "storage.settings.updated",
+            "storage_settings": capture_storage_settings_to_dict(storage_settings),
+            "cleanup": cleanup_result,
+        }
+    )
+
+    return {
+        "storage_settings": capture_storage_settings_to_dict(storage_settings),
+        "cleanup": cleanup_result,
     }
 
 
@@ -700,6 +751,16 @@ def device_settings_to_dict(device_settings) -> dict:
     }
 
 
+def capture_storage_settings_to_dict(storage_settings) -> dict:
+    return {
+        "day_capture_enabled": storage_settings.day_capture_enabled,
+        "night_capture_enabled": storage_settings.night_capture_enabled,
+        "retention_days": storage_settings.retention_days,
+        "max_storage_gb": storage_settings.max_storage_gb,
+        "updated_at": storage_settings.updated_at.isoformat() if storage_settings.updated_at else None,
+    }
+
+
 def current_period() -> str:
     return archive_period(datetime.now(timezone.utc))[1]
 
@@ -819,6 +880,129 @@ def create_thumbnail(source_path: Path, thumbnail_path: Path, max_size: tuple[in
     with Image.open(source_path) as image:
         image.thumbnail(max_size)
         image.convert("RGB").save(thumbnail_path, format="JPEG", quality=82, optimize=True)
+
+
+def capture_artifact_paths(rendered_file_path: Path) -> list[Path]:
+    relative_path = rendered_file_path.relative_to(settings.captures_dir)
+    return [
+        rendered_file_path,
+        settings.originals_dir / relative_path,
+        settings.thumbnails_dir / relative_path,
+    ]
+
+
+def capture_artifact_size(rendered_file_path: Path) -> int:
+    total = 0
+
+    for file_path in capture_artifact_paths(rendered_file_path):
+        if file_path.is_file():
+            total += file_path.stat().st_size
+
+    return total
+
+
+def remove_empty_parents(start_dir: Path, stop_dir: Path) -> None:
+    try:
+        current = start_dir.resolve()
+        stop = stop_dir.resolve()
+    except FileNotFoundError:
+        return
+
+    while current != stop and stop in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+
+        current = current.parent
+
+
+def delete_capture_artifacts(rendered_file_path: Path) -> int:
+    deleted_bytes = 0
+
+    for file_path in capture_artifact_paths(rendered_file_path):
+        if not file_path.is_file():
+            continue
+
+        deleted_bytes += file_path.stat().st_size
+        file_path.unlink()
+
+        root_dir = (
+            settings.captures_dir
+            if settings.captures_dir in file_path.parents
+            else settings.originals_dir
+            if settings.originals_dir in file_path.parents
+            else settings.thumbnails_dir
+        )
+        remove_empty_parents(file_path.parent, root_dir)
+
+    return deleted_bytes
+
+
+def capture_storage_bytes() -> int:
+    return (
+        directory_size(settings.captures_dir)
+        + directory_size(settings.originals_dir)
+        + directory_size(settings.thumbnails_dir)
+    )
+
+
+def enforce_capture_retention(storage_settings, protected_paths: set[Path] | None = None) -> dict:
+    deleted_files = 0
+    deleted_bytes = 0
+    protected_paths = {path.resolve() for path in protected_paths or set()}
+    rendered_files = list(iter_capture_files() or [])
+
+    if storage_settings.retention_days:
+        cutoff = datetime.now(timezone.utc).timestamp() - storage_settings.retention_days * 86400
+
+        for file_path in rendered_files:
+            if not file_path.is_file():
+                continue
+
+            if file_path.resolve() in protected_paths:
+                continue
+
+            if file_path.stat().st_mtime < cutoff:
+                deleted_bytes += delete_capture_artifacts(file_path)
+                deleted_files += 1
+
+    if storage_settings.max_storage_gb:
+        max_bytes = int(storage_settings.max_storage_gb * 1024 * 1024 * 1024)
+        remaining_files = [
+            file_path
+            for file_path in iter_capture_files() or []
+            if file_path.is_file()
+        ]
+        remaining_files.sort(key=lambda path: path.stat().st_mtime)
+        total_bytes = capture_storage_bytes()
+
+        for file_path in remaining_files:
+            if total_bytes <= max_bytes:
+                break
+
+            if file_path.resolve() in protected_paths:
+                continue
+
+            removed_bytes = delete_capture_artifacts(file_path)
+            deleted_bytes += removed_bytes
+            total_bytes -= removed_bytes
+            deleted_files += 1
+
+    return {
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+    }
+
+
+def capture_period_storage_enabled(storage_settings, period: str) -> bool:
+    if period == "day":
+        return bool(storage_settings.day_capture_enabled)
+
+    if period == "night":
+        return bool(storage_settings.night_capture_enabled)
+
+    return True
 
 
 @app.get("/api/nodes/{node_id}/settings")
@@ -1202,6 +1386,35 @@ async def upload_capture(
     capture_id = f"cap_{uuid4().hex}"
     captured_at = parse_capture_datetime(parsed_metadata)
     archive_date, period = archive_period(captured_at)
+    storage_settings = CaptureStorageSettingsRepository(db).get_or_create()
+
+    if not capture_period_storage_enabled(storage_settings, period):
+        logger.info(
+            "capture.skipped.storage_disabled",
+            node_id=node_id,
+            sequence_id=sequence_id,
+            archive_date=archive_date,
+            period=period,
+        )
+        await connections.broadcast_dashboard(
+            {
+                "type": "capture.skipped",
+                "node_id": node_id,
+                "reason": "storage_disabled",
+                "period": period,
+                "archive_date": archive_date,
+            }
+        )
+
+        return {
+            "status": "skipped",
+            "reason": "storage_disabled",
+            "node_id": node_id,
+            "sequence_id": sequence_id,
+            "archive_date": archive_date,
+            "period": period,
+        }
+
     filename = f"{capture_id}_{original_name}"
     capture_dir = settings.captures_dir / upload_node_id / archive_date / period
     output_path = capture_dir / filename
@@ -1235,6 +1448,8 @@ async def upload_capture(
         camera_settings=camera_settings,
     )
     create_thumbnail(output_path, thumbnail_path)
+    capture_record = capture_record_from_path(output_path)
+    cleanup_result = enforce_capture_retention(storage_settings, protected_paths={output_path})
 
     logger.info(
         "capture.uploaded",
@@ -1244,15 +1459,16 @@ async def upload_capture(
         archive_date=archive_date,
         period=period,
         path=str(output_path),
-        size_bytes=output_path.stat().st_size,
+        size_bytes=capture_record["size_bytes"],
+        cleanup=cleanup_result,
     )
 
-    capture_record = capture_record_from_path(output_path)
     await connections.broadcast_dashboard(
         {
             "type": "capture.uploaded",
             "node_id": node_id,
             "capture": capture_record,
+            "cleanup": cleanup_result,
         }
     )
 
@@ -1271,6 +1487,7 @@ async def upload_capture(
         "aspect_ratio": capture_record["aspect_ratio"],
         "metadata": parsed_metadata,
         "size_bytes": capture_record["size_bytes"],
+        "cleanup": cleanup_result,
     }
 
 
